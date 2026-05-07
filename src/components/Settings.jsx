@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Save, Eye, EyeOff, Plus, Trash2, Settings as SettingsIcon, Lock, Zap, Building2, Gem, Loader2, FolderOpen, CloudUpload, CheckCircle2, Link2Off } from 'lucide-react';
+import { Save, Eye, EyeOff, Plus, Trash2, Settings as SettingsIcon, Lock, Zap, Building2, Gem, Loader2, FolderOpen, CloudUpload, CheckCircle2, Link2Off, Info } from 'lucide-react';
 
 const Settings = ({ currentBranch, onUpdateBranch }) => {
   const [settings, setSettings] = useState({
