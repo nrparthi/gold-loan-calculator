@@ -15,20 +15,22 @@ const getNextDueDate = (loan) => {
   return d.toISOString().split('T')[0];
 };
 
-const MyLoans = ({ loans = [], onSelectLoan }) => {
+const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [branchFilter, setBranchFilter] = useState('all');
+
+  const branches = isSuperAdmin ? [...new Set(loans.map(l => l.branchName).filter(Boolean))].sort() : [];
 
   const filteredLoans = loans.filter(loan => {
-    const matchesSearch = 
+    const matchesSearch =
       loan.customerName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       loan.id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       loan.customerPhone?.includes(searchTerm) ||
       loan.bankLoanNumber?.toLowerCase().includes(searchTerm.toLowerCase());
-    
     const matchesStatus = statusFilter === 'all' || loan.status === statusFilter;
-    
-    return matchesSearch && matchesStatus;
+    const matchesBranch = !isSuperAdmin || branchFilter === 'all' || loan.branchName === branchFilter;
+    return matchesSearch && matchesStatus && matchesBranch;
   });
 
   return (
@@ -37,11 +39,11 @@ const MyLoans = ({ loans = [], onSelectLoan }) => {
         <div>
           <h1 className="text-3xl font-black text-white flex items-center gap-3">
             <FileText className="text-orange-400" size={32} />
-            My Loans
+            {isSuperAdmin ? 'All Loans' : 'My Loans'}
           </h1>
-          <p className="text-slate-400 font-medium mt-1">View and manage all branch loans</p>
+          <p className="text-slate-400 font-medium mt-1">{isSuperAdmin ? `${filteredLoans.length} loans across all branches` : 'View and manage all branch loans'}</p>
         </div>
-        
+
         <div className="flex flex-wrap gap-3 w-full md:w-auto">
           <div className="relative flex-1 md:w-64">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
@@ -53,7 +55,15 @@ const MyLoans = ({ loans = [], onSelectLoan }) => {
               className="w-full pl-11 pr-4 py-3 bg-slate-900/50 border border-white/10 rounded-2xl text-white focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all placeholder:text-slate-600"
             />
           </div>
-          
+
+          {isSuperAdmin && (
+            <select value={branchFilter} onChange={e => setBranchFilter(e.target.value)}
+              className="px-4 py-3 bg-slate-900/50 border border-white/10 rounded-2xl text-white focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all appearance-none cursor-pointer font-bold text-sm min-w-[140px]">
+              <option value="all">All Branches</option>
+              {branches.map(b => <option key={b} value={b}>{b}</option>)}
+            </select>
+          )}
+
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
@@ -74,6 +84,7 @@ const MyLoans = ({ loans = [], onSelectLoan }) => {
                 <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Customer ID</th>
                 <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Customer Name</th>
                 <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Amount Given</th>
+                {isSuperAdmin && <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Branch</th>}
                 <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em] min-w-[100px]">Status</th>
                 <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em] min-w-[130px]">Next Due Date</th>
                 <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em] min-w-[100px]">Loan No.</th>
@@ -92,6 +103,11 @@ const MyLoans = ({ loans = [], onSelectLoan }) => {
                     <td className="px-8 py-7 font-bold text-white/90">
                       ₹{(parseFloat(loan.amountGiven || loan.loanAmount) || 0).toLocaleString()}
                     </td>
+                    {isSuperAdmin && (
+                      <td className="px-8 py-7">
+                        <span className="px-2 py-1 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-full text-[10px] font-black uppercase tracking-wider">{loan.branchName || '—'}</span>
+                      </td>
+                    )}
                     <td className="px-8 py-7">
                       {(() => {
                         const _due = getNextDueDate(loan);

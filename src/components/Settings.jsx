@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Save, Eye, EyeOff, Plus, Trash2, Settings as SettingsIcon, Lock, Zap, Building2, Gem, Loader2, FolderOpen, CloudUpload, CheckCircle2, Link2Off, Info } from 'lucide-react';
 
-const Settings = ({ currentBranch, onUpdateBranch }) => {
+const Settings = ({ currentBranch, onUpdateBranch, isSuperAdmin = false }) => {
   const [settings, setSettings] = useState({
     goldRate: 8000,
     silverRate: 100,
@@ -19,6 +19,10 @@ const Settings = ({ currentBranch, onUpdateBranch }) => {
   const [newBank, setNewBank] = useState('');
   const [saveMessage, setSaveMessage] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [branches, setBranches] = useState([]);
+  const [newBranch, setNewBranch] = useState({ branchName: '', username: '', password: '' });
+  const [branchMsg, setBranchMsg] = useState({ text: '', error: false });
+  const [addingBranch, setAddingBranch] = useState(false);
   const [folderBrowser, setFolderBrowser] = useState({ open: false, current: '', dirs: [], parent: null, loading: false, error: '' });
   const [drive, setDrive] = useState({ connected: false, email: '', folderId: '', folderName: '', loading: false });
   const [driveFolderBrowser, setDriveFolderBrowser] = useState({ open: false, parentId: 'root', folders: [], loading: false, breadcrumb: [{ id: 'root', name: 'My Drive' }] });
@@ -59,9 +63,18 @@ const Settings = ({ currentBranch, onUpdateBranch }) => {
         setDrive(prev => ({ ...prev, ...res.data }));
       } catch {}
     };
+    const fetchBranches = async () => {
+      if (!isSuperAdmin) return;
+      try {
+        const apiUrl = import.meta.env.VITE_API_URL;
+        const res = await axios.get(`${apiUrl}/branches?adminId=${currentBranch.id}`);
+        setBranches(res.data);
+      } catch {}
+    };
     fetchSettings();
     fetchOrnaments();
     fetchDriveStatus();
+    fetchBranches();
   }, [currentBranch]);
 
   const handleAddOrnament = async () => {
@@ -174,6 +187,32 @@ const Settings = ({ currentBranch, onUpdateBranch }) => {
 
   const handleRemoveBank = (bank) => {
     setSettings(prev => ({ ...prev, banks: prev.banks.filter(b => b !== bank) }));
+  };
+
+  const handleAddBranch = async () => {
+    const { branchName, username, password } = newBranch;
+    if (!branchName || !username || !password) { setBranchMsg({ text: 'All fields are required', error: true }); return; }
+    setAddingBranch(true); setBranchMsg({ text: '', error: false });
+    try {
+      const apiUrl = import.meta.env.VITE_API_URL;
+      const res = await axios.post(`${apiUrl}/branches?adminId=${currentBranch.id}`, { branchName, username, password });
+      setBranches(prev => [...prev, res.data]);
+      setNewBranch({ branchName: '', username: '', password: '' });
+      setBranchMsg({ text: 'Branch created successfully', error: false });
+    } catch (err) {
+      setBranchMsg({ text: err.response?.data?.error || 'Failed to create branch', error: true });
+    } finally { setAddingBranch(false); }
+  };
+
+  const handleDeleteBranch = async (id) => {
+    if (!window.confirm('Delete this branch? This cannot be undone.')) return;
+    try {
+      const apiUrl = import.meta.env.VITE_API_URL;
+      await axios.delete(`${apiUrl}/branches/${id}?adminId=${currentBranch.id}`);
+      setBranches(prev => prev.filter(b => b.id !== id));
+    } catch (err) {
+      alert(err.response?.data?.error || 'Failed to delete branch');
+    }
   };
 
   const handleSave = async () => {
@@ -572,6 +611,56 @@ const Settings = ({ currentBranch, onUpdateBranch }) => {
           </div>
         </div>
       </div>
+
+      {/* Branch Management — Super Admin only */}
+      {isSuperAdmin && (
+        <div className="bg-slate-800/50 backdrop-blur-xl rounded-2xl border border-white/10 p-6 lg:p-8 shadow-xl">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center"><Building2 className="text-indigo-400" size={20} /></div>
+            <div>
+              <h3 className="text-lg font-bold text-white">Branch Management</h3>
+              <p className="text-slate-400 text-sm">Create and manage branch accounts.</p>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-white/5 mb-6">
+            <table className="w-full">
+              <thead className="bg-slate-900/50 text-slate-400 text-left">
+                <tr>
+                  <th className="px-5 py-3 text-xs font-bold uppercase tracking-wider">Branch Name</th>
+                  <th className="px-5 py-3 text-xs font-bold uppercase tracking-wider">Username</th>
+                  <th className="px-5 py-3 text-xs font-bold uppercase tracking-wider text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {branches.length === 0 && (
+                  <tr><td colSpan={3} className="px-5 py-6 text-center text-slate-500 text-sm">No branches yet</td></tr>
+                )}
+                {branches.map(b => (
+                  <tr key={b.id} className="hover:bg-white/[0.02]">
+                    <td className="px-5 py-4 text-white font-semibold">{b.branchName}</td>
+                    <td className="px-5 py-4 text-slate-300 font-mono text-sm">{b.username}</td>
+                    <td className="px-5 py-4 text-right">
+                      <button onClick={() => handleDeleteBranch(b.id)} className="p-2 text-red-400 hover:bg-red-500/10 rounded-lg transition-all"><Trash2 size={16} /></button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <input value={newBranch.branchName} onChange={e => setNewBranch(p => ({ ...p, branchName: e.target.value }))} placeholder="Branch Name" className="bg-slate-900/50 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-indigo-500" />
+            <input value={newBranch.username} onChange={e => setNewBranch(p => ({ ...p, username: e.target.value }))} placeholder="Username" className="bg-slate-900/50 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-indigo-500" />
+            <input value={newBranch.password} onChange={e => setNewBranch(p => ({ ...p, password: e.target.value }))} placeholder="Password" type="password" className="bg-slate-900/50 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-indigo-500" />
+          </div>
+          {branchMsg.text && <p className={`text-xs mt-2 ${branchMsg.error ? 'text-red-400' : 'text-green-400'}`}>{branchMsg.text}</p>}
+          <button onClick={handleAddBranch} disabled={addingBranch} className="mt-3 flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl font-semibold text-sm transition-all">
+            {addingBranch ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+            Add Branch
+          </button>
+        </div>
+      )}
 
       {/* Save Button */}
       <div className="flex gap-4 justify-end flex-wrap">

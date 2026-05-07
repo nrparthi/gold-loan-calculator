@@ -22,11 +22,16 @@ const LoanManager = ({ currentBranch, onUpdateBranch, onLogout }) => {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
 
+  const isSuperAdmin = currentBranch?.role === 'super_admin';
+
   const fetchLoans = async () => {
     if (!currentBranch) return;
     try {
       const apiUrl = import.meta.env.VITE_API_URL;
-      const response = await axios.get(`${apiUrl}/loans?branchId=${currentBranch.id}`);
+      const params = isSuperAdmin
+        ? `role=super_admin`
+        : `branchId=${currentBranch.id}`;
+      const response = await axios.get(`${apiUrl}/loans?${params}`);
       setLoans(response.data || []);
     } catch (error) {
       console.error('Error fetching loans:', error);
@@ -83,8 +88,8 @@ const LoanManager = ({ currentBranch, onUpdateBranch, onLogout }) => {
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, color: 'from-blue-500 to-cyan-500' },
-    { id: 'loanCreation', label: 'New Loan', icon: Plus, color: 'from-purple-500 to-pink-500' },
-    { id: 'myLoans', label: 'My Loans', icon: FileText, color: 'from-orange-500 to-red-500' },
+    ...(!isSuperAdmin ? [{ id: 'loanCreation', label: 'New Loan', icon: Plus, color: 'from-purple-500 to-pink-500' }] : []),
+    { id: 'myLoans', label: isSuperAdmin ? 'All Loans' : 'My Loans', icon: FileText, color: 'from-orange-500 to-red-500' },
     { id: 'reports', label: 'Reports', icon: BarChart3, color: 'from-green-500 to-emerald-500' },
     { id: 'settings', label: 'Settings', icon: Settings, color: 'from-indigo-500 to-purple-500' }
   ];
@@ -175,31 +180,32 @@ const LoanManager = ({ currentBranch, onUpdateBranch, onLogout }) => {
         <div className="flex-1 overflow-y-auto custom-scrollbar relative z-10 p-6 lg:p-12">
           <div className="max-w-7xl mx-auto pb-20">
             {currentPage === 'dashboard' && (
-              <Dashboard loans={loans} onSelectLoan={handleSelectLoan} />
+              <Dashboard loans={loans} onSelectLoan={handleSelectLoan} isSuperAdmin={isSuperAdmin} />
             )}
             {currentPage === 'myLoans' && (
-              <MyLoans loans={loans} onSelectLoan={handleSelectLoan} />
+              <MyLoans loans={loans} onSelectLoan={handleSelectLoan} isSuperAdmin={isSuperAdmin} />
             )}
-            {currentPage === 'loanCreation' && (
-              <LoanCreation 
-                onAddLoan={handleAddLoan} 
+            {currentPage === 'loanCreation' && !isSuperAdmin && (
+              <LoanCreation
+                onAddLoan={handleAddLoan}
                 onPreviewBill={setShowBillLoan}
                 currentBranch={currentBranch}
               />
             )}
             {currentPage === 'loanDetails' && selectedLoan && (
-              <LoanDetails 
-                loan={selectedLoan} 
-                onUpdateLoan={(updates) => handleUpdateLoan(selectedLoan.id, updates)} 
+              <LoanDetails
+                loan={selectedLoan}
+                onUpdateLoan={(updates) => handleUpdateLoan(selectedLoan.id, updates)}
               />
             )}
             {currentPage === 'reports' && (
-              <Reports loans={loans} />
+              <Reports loans={loans} isSuperAdmin={isSuperAdmin} />
             )}
             {currentPage === 'settings' && (
-              <SettingsPage 
-                currentBranch={currentBranch} 
-                onUpdateBranch={onUpdateBranch} 
+              <SettingsPage
+                currentBranch={currentBranch}
+                onUpdateBranch={onUpdateBranch}
+                isSuperAdmin={isSuperAdmin}
               />
             )}
           </div>

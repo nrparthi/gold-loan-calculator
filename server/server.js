@@ -167,18 +167,33 @@ async function getBranchStoragePath(branchId) {
 // But I'll add a simple check to seed admin if empty
 const initDb = async () => {
   try {
-    const res = await db.query("SELECT count(*) FROM branches");
+    // Add role column if not exists
+    await db.query(`ALTER TABLE branches ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'branch'`);
+
+    // Seed super admin if not exists
+    const saUsername = process.env.SUPER_ADMIN_USERNAME || 'superadmin';
+    const saExists = await db.query('SELECT id FROM branches WHERE role = $1', ['super_admin']);
+    if (saExists.rows.length === 0) {
+      const saHash = await bcrypt.hash(process.env.SUPER_ADMIN_PASSWORD || 'superpass', 10);
+      await db.query(
+        `INSERT INTO branches (id, username, password, branch_name, default_interest_rate, gold_rate, silver_rate, role) VALUES ($1, $2, $3, $4, 1.5, 8000, 100, 'super_admin')`,
+        [Date.now().toString(), saUsername, saHash, 'Super Admin']
+      );
+      console.log(`Super admin created (username: ${saUsername})`);
+    }
+
+    const res = await db.query("SELECT count(*) FROM branches WHERE role != 'super_admin'");
     if (parseInt(res.rows[0].count) === 0) {
-      const adminId = Date.now().toString();
+      const adminId = (Date.now() + 1).toString();
       const adminUsername = process.env.ADMIN_USERNAME || 'admin';
       const adminPassword = process.env.ADMIN_PASSWORD || 'password';
       const hash = await bcrypt.hash(adminPassword, 10);
-      
+
       await db.query(
         `INSERT INTO branches (id, username, password, branch_name, default_interest_rate, gold_rate, silver_rate) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [adminId, adminUsername, hash, 'Main Branch', 1.5, 8000, 100]
       );
-      console.log(`Default admin branch created (username: ${adminUsername})`);
+      console.log(`Default branch created (username: ${adminUsername})`);
 
       // Seed default ornaments
       const defaults = [
@@ -223,7 +238,8 @@ app.post('/api/login', async (req, res) => {
       branchName: row.branch_name,
       defaultInterestRate: row.default_interest_rate,
       goldRate: row.gold_rate,
-      silverRate: row.silver_rate
+      silverRate: row.silver_rate,
+      role: row.role || 'branch'
     };
 
     const token = jwt.sign({ id: row.id }, process.env.JWT_SECRET || 'secret', { expiresIn: '8h' });
@@ -324,19 +340,31 @@ app.post('/api/upload', upload.single('photo'), async (req, res) => {
 
 // 3. Get all loans for a specific branch (JOIN with Customers)
 app.get('/api/loans', async (req, res) => {
-  const branchId = req.query.branchId;
-  if (!branchId) return res.status(400).json({ error: 'branchId is required' });
-  
+  const { branchId, role } = req.query;
+  const isSuperAdmin = role === 'super_admin';
+  if (!branchId && !isSuperAdmin) return res.status(400).json({ error: 'branchId is required' });
+
   try {
-    const result = await db.query(`
-      SELECT l.*, c.name as customer_name, c.phone as customer_phone, c.address, c.gender, c.photo as customer_photo, c.aadhar_photo,
-      (SELECT COUNT(*) FROM interest_payments ip WHERE ip.loan_id = l.id AND ip.status != 'paid') as pending_count,
-      (SELECT MIN(ip2.due_date) FROM interest_payments ip2 WHERE ip2.loan_id = l.id AND ip2.status != 'paid') as next_due_date
-      FROM loans l
-      LEFT JOIN customers c ON l.guardian_name = c.id
-      WHERE l.branch_id = $1 
-      ORDER BY l.created_at DESC
-    `, [branchId]);
+    const result = isSuperAdmin
+      ? await db.query(`
+          SELECT l.*, c.name as customer_name, c.phone as customer_phone, c.address, c.gender, c.photo as customer_photo, c.aadhar_photo,
+          b.branch_name,
+          (SELECT COUNT(*) FROM interest_payments ip WHERE ip.loan_id = l.id AND ip.status != 'paid') as pending_count,
+          (SELECT MIN(ip2.due_date) FROM interest_payments ip2 WHERE ip2.loan_id = l.id AND ip2.status != 'paid') as next_due_date
+          FROM loans l
+          LEFT JOIN customers c ON l.guardian_name = c.id
+          LEFT JOIN branches b ON l.branch_id = b.id
+          ORDER BY l.created_at DESC
+        `)
+      : await db.query(`
+          SELECT l.*, c.name as customer_name, c.phone as customer_phone, c.address, c.gender, c.photo as customer_photo, c.aadhar_photo,
+          (SELECT COUNT(*) FROM interest_payments ip WHERE ip.loan_id = l.id AND ip.status != 'paid') as pending_count,
+          (SELECT MIN(ip2.due_date) FROM interest_payments ip2 WHERE ip2.loan_id = l.id AND ip2.status != 'paid') as next_due_date
+          FROM loans l
+          LEFT JOIN customers c ON l.guardian_name = c.id
+          WHERE l.branch_id = $1
+          ORDER BY l.created_at DESC
+        `, [branchId]);
     
     const loans = result.rows.map(row => ({
       ...row,
@@ -361,7 +389,8 @@ app.get('/api/loans', async (req, res) => {
       ornamentPhoto: row.ornament_photo,
       bankLoanNumber: row.bank_loan_number,
       area: row.area,
-      nextDueDate: row.next_due_date ? new Date(row.next_due_date).toISOString().split('T')[0] : null
+      nextDueDate: row.next_due_date ? new Date(row.next_due_date).toISOString().split('T')[0] : null,
+      branchName: row.branch_name || null
     }));
     res.json(loans);
   } catch (err) {
@@ -630,6 +659,47 @@ app.post('/api/settings/ornaments', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Branch Management (Super Admin only)
+const requireSuperAdmin = async (req, res, next) => {
+  const { adminId } = req.query;
+  if (!adminId) return res.status(403).json({ error: 'Forbidden' });
+  const result = await db.query('SELECT role FROM branches WHERE id = $1', [adminId]);
+  if (!result.rows[0] || result.rows[0].role !== 'super_admin') return res.status(403).json({ error: 'Forbidden' });
+  next();
+};
+
+app.get('/api/branches', requireSuperAdmin, async (_req, res) => {
+  try {
+    const result = await db.query(`SELECT id, username, branch_name, gold_rate, silver_rate, default_interest_rate, role FROM branches WHERE role != 'super_admin' ORDER BY branch_name`);
+    res.json(result.rows.map(r => ({ id: r.id, username: r.username, branchName: r.branch_name, goldRate: r.gold_rate, silverRate: r.silver_rate, defaultInterestRate: r.default_interest_rate })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/branches', requireSuperAdmin, async (req, res) => {
+  const { branchName, username, password } = req.body;
+  if (!branchName || !username || !password) return res.status(400).json({ error: 'All fields are required' });
+  try {
+    const exists = await db.query('SELECT id FROM branches WHERE username = $1', [username]);
+    if (exists.rows.length > 0) return res.status(409).json({ error: 'Username already taken' });
+    const id = Date.now().toString();
+    const hash = await bcrypt.hash(password, 10);
+    await db.query(
+      `INSERT INTO branches (id, username, password, branch_name, default_interest_rate, gold_rate, silver_rate) VALUES ($1, $2, $3, $4, 1.5, 8000, 100)`,
+      [id, username, hash, branchName]
+    );
+    res.json({ id, username, branchName });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/branches/:id', requireSuperAdmin, async (req, res) => {
+  try {
+    const loans = await db.query('SELECT COUNT(*) FROM loans WHERE branch_id = $1', [req.params.id]);
+    if (parseInt(loans.rows[0].count) > 0) return res.status(400).json({ error: 'Cannot delete branch with existing loans' });
+    await db.query('DELETE FROM branches WHERE id = $1', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // 6. Branch Settings Routes
