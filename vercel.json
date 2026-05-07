@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/goldloan/(.*)", "destination": "/goldloan/index.html" }
+  ]
+}
