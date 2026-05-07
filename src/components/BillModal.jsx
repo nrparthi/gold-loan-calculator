@@ -37,6 +37,8 @@ const BillModal = ({ loan, onClose, onConfirmSave, currentBranch }) => {
         }
       });
       setSaveStatus('Saved!');
+      if (onConfirmSave) onConfirmSave(loan);
+      setTimeout(() => onClose(), 800);
     } catch (err) {
       console.error('PDF save failed:', err);
       setSaveStatus('');
@@ -103,7 +105,6 @@ const BillModal = ({ loan, onClose, onConfirmSave, currentBranch }) => {
     `);
     
     printWindow.document.close();
-    if (onConfirmSave) onConfirmSave(loan);
   };
 
   const totalOrnamentValue = loan.ornaments?.reduce((sum, o) => sum + (o.value || 0), 0) || 0;
@@ -140,7 +141,7 @@ const BillModal = ({ loan, onClose, onConfirmSave, currentBranch }) => {
               className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-400 hover:to-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-xl font-black shadow-xl shadow-blue-500/20 transition-all transform active:scale-95"
             >
               {saving ? <Loader2 size={18} className="animate-spin" /> : <Printer size={18} />}
-              {saving ? 'Saving…' : 'Confirm & Save'}
+              {saving ? 'Saving…' : 'Save & Exit'}
             </button>
           </div>
         </div>

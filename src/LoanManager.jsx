@@ -216,20 +216,13 @@ const LoanManager = ({ currentBranch, onUpdateBranch, onLogout }) => {
           loan={showBillLoan}
           currentBranch={currentBranch}
           onConfirmSave={(loanData) => {
-             // Only save if it's a NEW loan being created (not just a preview from dashboard)
              if (currentPage === 'loanCreation') {
                handleAddLoan(loanData);
-             } else {
-               // If it was just a preview, just close it
-               setShowBillLoan(null);
              }
           }}
           onClose={() => {
-            // Redirect only if the loan was officially saved
-            if (currentPage === 'loanCreation' && showBillLoan.isSaved) {
-               setCurrentPage('dashboard');
-            }
             setShowBillLoan(null);
+            setCurrentPage('myLoans');
           }} 
         />
       )}
