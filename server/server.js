@@ -10,7 +10,26 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { google } = require('googleapis');
 const { Readable } = require('stream');
+const cloudinary = require('cloudinary').v2;
 const db = require('./db');
+
+// ── Cloudinary config ─────────────────────────────────────────────────────────
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+const uploadToCloudinary = (buffer, folder, filename) => {
+  return new Promise((resolve, reject) => {
+    const publicId = `${folder}/${filename.replace(/\.[^.]+$/, '')}`;
+    const stream = cloudinary.uploader.upload_stream(
+      { public_id: publicId, resource_type: 'auto', overwrite: true },
+      (err, result) => err ? reject(err) : resolve(result.secure_url)
+    );
+    stream.end(buffer);
+  });
+};
 
 // ── Google Drive helpers ──────────────────────────────────────────────────────
 const TOKENS_FILE = path.join(__dirname, 'google_tokens.json');
@@ -286,25 +305,21 @@ app.post('/api/auth/google/folder', (req, res) => {
 app.post('/api/upload', upload.single('photo'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-  const { customerId, loanId, photoType, branchId } = req.query;
+  const { customerId, loanId, photoType } = req.query;
   const ext = path.extname(req.file.originalname) || '.jpg';
   const filename = (photoType === 'ornament')
     ? `ornament_${Date.now()}${ext}`
     : `${photoType || 'photo'}${ext}`;
 
-  // Local storage
-  const basePath = await getBranchStoragePath(branchId);
-  let dirPath;
-  if (loanId && (photoType === 'ornament' || photoType === 'receipt')) {
-    dirPath = path.join(basePath, customerId || 'unknown', loanId);
-  } else {
-    dirPath = path.join(basePath, customerId || 'unknown');
+  // Cloudinary upload
+  try {
+    const folder = loanId ? `gold-loans/${customerId || 'unknown'}/${loanId}` : `gold-loans/${customerId || 'unknown'}`;
+    const url = await uploadToCloudinary(req.file.buffer, folder, filename);
+    return res.json({ url, storage: 'cloudinary' });
+  } catch (err) {
+    console.error('Cloudinary upload failed:', err.message);
+    return res.status(500).json({ error: 'Upload failed' });
   }
-  fs.mkdirSync(dirPath, { recursive: true });
-  const filePath = path.join(dirPath, filename);
-  fs.writeFileSync(filePath, req.file.buffer);
-  const relativeToBase = path.relative(basePath, filePath).replace(/\\/g, '/');
-  res.json({ url: `${BASE_URL}/uploads/${relativeToBase}`, storage: 'local' });
 });
 
 // 3. Get all loans for a specific branch (JOIN with Customers)
