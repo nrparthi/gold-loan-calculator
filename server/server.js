@@ -170,16 +170,24 @@ const initDb = async () => {
     // Add role column if not exists
     await db.query(`ALTER TABLE branches ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'branch'`);
 
-    // Seed super admin if not exists
+    // Seed or sync super admin credentials from env vars
     const saUsername = process.env.SUPER_ADMIN_USERNAME || 'superadmin';
+    const saPassword = process.env.SUPER_ADMIN_PASSWORD || 'superpass';
+    const saHash = await bcrypt.hash(saPassword, 10);
     const saExists = await db.query('SELECT id FROM branches WHERE role = $1', ['super_admin']);
     if (saExists.rows.length === 0) {
-      const saHash = await bcrypt.hash(process.env.SUPER_ADMIN_PASSWORD || 'superpass', 10);
       await db.query(
         `INSERT INTO branches (id, username, password, branch_name, default_interest_rate, gold_rate, silver_rate, role) VALUES ($1, $2, $3, $4, 1.5, 8000, 100, 'super_admin')`,
         [Date.now().toString(), saUsername, saHash, 'Super Admin']
       );
       console.log(`Super admin created (username: ${saUsername})`);
+    } else {
+      // Always sync username+password from env vars on startup
+      await db.query(
+        `UPDATE branches SET username = $1, password = $2 WHERE role = 'super_admin'`,
+        [saUsername, saHash]
+      );
+      console.log(`Super admin credentials synced (username: ${saUsername})`);
     }
 
     const res = await db.query("SELECT count(*) FROM branches WHERE role != 'super_admin'");
