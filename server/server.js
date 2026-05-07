@@ -226,6 +226,12 @@ initDb();
 
 // Routes
 
+// Temp debug — remove after confirming super admin works
+app.get('/api/debug/branches', async (_req, res) => {
+  const result = await db.query(`SELECT id, username, branch_name, role FROM branches ORDER BY role`);
+  res.json(result.rows);
+});
+
 // 1. Login
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
