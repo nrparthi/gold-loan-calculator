@@ -292,19 +292,7 @@ app.post('/api/upload', upload.single('photo'), async (req, res) => {
     ? `ornament_${Date.now()}${ext}`
     : `${photoType || 'photo'}${ext}`;
 
-  // Try Google Drive upload if connected and folder configured
-  const drive = getAuthorizedDrive();
-  const cfg = getDriveConfig();
-  if (drive && cfg.folderId) {
-    try {
-      const url = await uploadToDrive(req.file.buffer, filename, req.file.mimetype, customerId, loanId, photoType);
-      return res.json({ url, storage: 'drive' });
-    } catch (err) {
-      console.warn('Drive upload failed, falling back to local:', err.message);
-    }
-  }
-
-  // Local storage fallback
+  // Local storage
   const basePath = await getBranchStoragePath(branchId);
   let dirPath;
   if (loanId && (photoType === 'ornament' || photoType === 'receipt')) {
