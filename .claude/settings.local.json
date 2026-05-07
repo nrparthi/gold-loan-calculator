@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm start *)",
+      "Bash(PORT=3000 npm start)",
+      "Bash(lsof -ti:3000 -ti:5001)",
+      "Bash(xargs ps *)",
+      "Bash(node server.js)",
+      "Bash(psql postgres://karthick@localhost:5432/goldloan -c \"\\\\d loans\")",
+      "Bash(kill 2605)",
+      "Bash(curl -X POST http://localhost:5001/api/loans -H 'Content-Type: application/json' -d '{ *)",
+      "Bash(pkill -f \"node server/server.js\")",
+      "Bash(curl -s -X POST http://localhost:5001/api/loans -H 'Content-Type: application/json' -d '{ *)",
+      "Bash(rm /tmp/loan-debug.log)",
+      "Read(//tmp/**)",
+      "Bash(cat /tmp/loan-debug.log)",
+      "Bash(curl -s -X POST http://localhost:5001/api/login -H 'Content-Type: application/json' -d '{\"username\":\"admin\",\"password\":\"password\"}')",
+      "Bash(curl -v -X POST http://localhost:5001/api/loans -H 'Content-Type: application/json' -d '{\"branchId\":\"test\"}')",
+      "Bash(touch /tmp/test-write.log)",
+      "Bash(rm /tmp/test-write.log)",
+      "Bash(lsof -ti:3000)",
+      "Bash(psql postgres://karthick@localhost:5432/goldloan -c ' *)",
+      "Bash(pkill -f \"react-scripts start\")",
+      "Bash(xargs kill *)",
+      "Bash(lsof -ti:5001)",
+      "Bash(pkill -9 -f \"node server/server.js\")",
+      "Bash(rm /tmp/server-output.log)",
+      "Bash(curl -s -X POST http://localhost:5001/api/loans -H 'Content-Type: application/json' -d '{\"customerName\":\"karthick\",\"customerPhone\":\"9524599398\",\"guardianName\":\"\",\"address\":\"erode\",\"gender\":\"M\",\"loanDate\":\"2026-05-06\",\"loanTime\":\"21:13:50\",\"ornamentCategory\":\"SILVER\",\"interestRate\":1.5,\"processingFee\":0,\"paymentMode\":\"CASH\",\"bankName\":\"SELF\",\"manualLoanAmount\":\"\",\"ornamentPhoto\":null,\"customerPhoto\":null,\"ornaments\":[{\"type\":\"ANKLET\",\"specification\":\"916\",\"quantity\":1,\"grossWt\":0,\"netWt\":1,\"ratePerGram\":100,\"value\":100,\"photo\":null}],\"loanAmount\":100,\"amountGiven\":100,\"interestAmount\":2,\"branchId\":\"1778082042431\"}')",
+      "Bash(curl -s -X POST http://localhost:5001/api/loans -H 'Content-Type: application/json' -d '{\"customerName\":\"karthick\",\"customerPhone\":\"9524599398\",\"address\":\"erode\",\"ornamentCategory\":\"SILVER\",\"interestRate\":1.5,\"loanAmount\":100,\"amountGiven\":100,\"interestAmount\":2,\"branchId\":\"1778082042431\"}')",
+      "Bash(rm /tmp/loan-insert.log)",
+      "Bash(cat /tmp/loan-insert.log)",
+      "Bash(psql \"postgresql://neondb_owner:npg_mNs8zpBA3GPy@ep-tiny-paper-aow7q41c.c-2.ap-southeast-1.aws.neon.tech/neondb?sslmode=require\" -c \"SELECT id, name, phone FROM customers WHERE phone='9524599398';\")",
+      "Bash(psql \"postgresql://neondb_owner:npg_mNs8zpBA3GPy@ep-tiny-paper-aow7q41c.c-2.ap-southeast-1.aws.neon.tech/neondb?sslmode=require\" -c \"ALTER TABLE branches ADD COLUMN IF NOT EXISTS storage_path TEXT DEFAULT NULL;\")",
+      "Bash(curl -s -F \"photo=@/tmp/test.jpg\" \"http://localhost:5001/api/upload?customerId=C-7412P&photoType=customer&branchId=1778160688772\")",
+      "Bash(curl -s -F \"photo=@/tmp/test.png\" \"http://localhost:5001/api/upload?customerId=C-7412P&photoType=customer&branchId=1778160688772\")",
+      "Bash(curl -s http://localhost:5001/api/select-folder)"
+    ]
+  }
+}
