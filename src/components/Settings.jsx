@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Save, Eye, EyeOff, Plus, Trash2, Settings as SettingsIcon, Lock, Zap, Building2, Gem, Loader2, FolderOpen, CloudUpload, CheckCircle2, Link2Off, Info } from 'lucide-react';
 
@@ -22,10 +22,15 @@ const Settings = ({ currentBranch, onUpdateBranch }) => {
   const [folderBrowser, setFolderBrowser] = useState({ open: false, current: '', dirs: [], parent: null, loading: false, error: '' });
   const [drive, setDrive] = useState({ connected: false, email: '', folderId: '', folderName: '', loading: false });
   const [driveFolderBrowser, setDriveFolderBrowser] = useState({ open: false, parentId: 'root', folders: [], loading: false, breadcrumb: [{ id: 'root', name: 'My Drive' }] });
+  const drivePollingRef = useRef(null);
   
   // Ornaments State
   const [ornaments, setOrnaments] = useState([]);
   const [newOrnament, setNewOrnament] = useState({ name: '', metalType: 'GOLD' });
+
+  useEffect(() => {
+    return () => { if (drivePollingRef.current) clearInterval(drivePollingRef.current); };
+  }, []);
 
   useEffect(() => {
     const fetchSettings = async () => {
@@ -91,16 +96,21 @@ const Settings = ({ currentBranch, onUpdateBranch }) => {
   const connectGoogleDrive = () => {
     const apiUrl = import.meta.env.VITE_API_URL;
     const popup = window.open(`${apiUrl}/auth/google`, 'google-auth', 'width=520,height=620');
+    if (drivePollingRef.current) clearInterval(drivePollingRef.current);
     const poll = setInterval(async () => {
+      if (popup?.closed) { clearInterval(poll); drivePollingRef.current = null; return; }
       try {
         const res = await axios.get(`${apiUrl}/auth/google/status`);
         if (res.data.connected) {
           clearInterval(poll);
+          drivePollingRef.current = null;
           popup?.close();
           setDrive(prev => ({ ...prev, ...res.data }));
         }
       } catch {}
-    }, 1500);
+    }, 3000);
+    drivePollingRef.current = poll;
+    setTimeout(() => { clearInterval(poll); drivePollingRef.current = null; }, 3 * 60 * 1000);
   };
 
   const disconnectGoogleDrive = async () => {
