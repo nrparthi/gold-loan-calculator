@@ -170,52 +170,56 @@ const initDb = async () => {
     // Add role column if not exists
     await db.query(`ALTER TABLE branches ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'branch'`);
 
-    // Seed or sync super admin credentials from env vars
-    const saUsername = process.env.SUPER_ADMIN_USERNAME || 'superadmin';
-    const saPassword = process.env.SUPER_ADMIN_PASSWORD || 'superpass';
-    const saHash = await bcrypt.hash(saPassword, 10);
-    const saExists = await db.query('SELECT id FROM branches WHERE role = $1', ['super_admin']);
-    if (saExists.rows.length === 0) {
-      await db.query(
-        `INSERT INTO branches (id, username, password, branch_name, default_interest_rate, gold_rate, silver_rate, role) VALUES ($1, $2, $3, $4, 1.5, 8000, 100, 'super_admin')`,
-        [Date.now().toString(), saUsername, saHash, 'Super Admin']
-      );
-      console.log(`Super admin created (username: ${saUsername})`);
+    // Seed or sync super admin credentials from env vars (skip if not configured)
+    const saUsername = process.env.SUPER_ADMIN_USERNAME;
+    const saPassword = process.env.SUPER_ADMIN_PASSWORD;
+    if (saUsername && saPassword) {
+      const saHash = await bcrypt.hash(saPassword, 10);
+      const saExists = await db.query('SELECT id FROM branches WHERE role = $1', ['super_admin']);
+      if (saExists.rows.length === 0) {
+        await db.query(
+          `INSERT INTO branches (id, username, password, branch_name, default_interest_rate, gold_rate, silver_rate, role) VALUES ($1, $2, $3, $4, 1.5, 8000, 100, 'super_admin')`,
+          [Date.now().toString(), saUsername, saHash, 'Super Admin']
+        );
+        console.log(`Super admin created (username: ${saUsername})`);
+      } else {
+        await db.query(
+          `UPDATE branches SET username = $1, password = $2 WHERE role = 'super_admin'`,
+          [saUsername, saHash]
+        );
+        console.log(`Super admin credentials synced (username: ${saUsername})`);
+      }
     } else {
-      // Always sync username+password from env vars on startup
-      await db.query(
-        `UPDATE branches SET username = $1, password = $2 WHERE role = 'super_admin'`,
-        [saUsername, saHash]
-      );
-      console.log(`Super admin credentials synced (username: ${saUsername})`);
+      console.log('SUPER_ADMIN_USERNAME/PASSWORD not set — skipping super admin setup');
     }
 
     const res = await db.query("SELECT count(*) FROM branches WHERE role != 'super_admin'");
     if (parseInt(res.rows[0].count) === 0) {
-      const adminId = (Date.now() + 1).toString();
-      const adminUsername = process.env.ADMIN_USERNAME || 'admin';
-      const adminPassword = process.env.ADMIN_PASSWORD || 'password';
-      const hash = await bcrypt.hash(adminPassword, 10);
-
-      await db.query(
-        `INSERT INTO branches (id, username, password, branch_name, default_interest_rate, gold_rate, silver_rate) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [adminId, adminUsername, hash, 'Main Branch', 1.5, 8000, 100]
-      );
-      console.log(`Default branch created (username: ${adminUsername})`);
-
-      // Seed default ornaments
-      const defaults = [
-        ['1', 'admin', 'CHAIN', 'GOLD'],
-        ['2', 'admin', 'RING', 'GOLD'],
-        ['3', 'admin', 'AARAM', 'GOLD'],
-        ['4', 'admin', 'NECKLES', 'GOLD'],
-        ['5', 'admin', 'BANGLES', 'GOLD'],
-        ['6', 'admin', 'PLATE', 'SILVER'],
-        ['7', 'admin', 'ANKLET', 'SILVER'],
-        ['8', 'admin', 'COIN', 'SILVER']
-      ];
-      for (const d of defaults) {
-        await db.query(`INSERT INTO ornaments_config (id, branch_id, name, metal_type) VALUES ($1, $2, $3, $4)`, d);
+      const adminUsername = process.env.ADMIN_USERNAME;
+      const adminPassword = process.env.ADMIN_PASSWORD;
+      if (adminUsername && adminPassword) {
+        const adminId = (Date.now() + 1).toString();
+        const hash = await bcrypt.hash(adminPassword, 10);
+        await db.query(
+          `INSERT INTO branches (id, username, password, branch_name, default_interest_rate, gold_rate, silver_rate) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [adminId, adminUsername, hash, 'Main Branch', 1.5, 8000, 100]
+        );
+        console.log(`Default branch created (username: ${adminUsername})`);
+        const defaults = [
+          ['1', 'admin', 'CHAIN', 'GOLD'],
+          ['2', 'admin', 'RING', 'GOLD'],
+          ['3', 'admin', 'AARAM', 'GOLD'],
+          ['4', 'admin', 'NECKLES', 'GOLD'],
+          ['5', 'admin', 'BANGLES', 'GOLD'],
+          ['6', 'admin', 'PLATE', 'SILVER'],
+          ['7', 'admin', 'ANKLET', 'SILVER'],
+          ['8', 'admin', 'COIN', 'SILVER']
+        ];
+        for (const d of defaults) {
+          await db.query(`INSERT INTO ornaments_config (id, branch_id, name, metal_type) VALUES ($1, $2, $3, $4)`, d);
+        }
+      } else {
+        console.log('ADMIN_USERNAME/PASSWORD not set — skipping default branch setup');
       }
     }
   } catch (err) {
