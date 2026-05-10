@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
-import { TrendingUp, Clock, DollarSign, AlertCircle, ChevronRight, Zap, Award, Target, Calendar } from 'lucide-react';
+import { useState } from 'react';
+import { TrendingUp, Clock, DollarSign, AlertCircle, ChevronRight, Zap, Award, Target, Calendar, Bell } from 'lucide-react';
+import { getNextDueDate } from '../utils/calculations';
 
 const today = new Date().toISOString().split('T')[0];
+const todayDate = new Date(); todayDate.setHours(0,0,0,0);
 const sixMonthsAgo = new Date(new Date().setMonth(new Date().getMonth() - 6)).toISOString().split('T')[0];
 
-const Dashboard = ({ loans = [], onSelectLoan }) => {
+const Dashboard = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
   const [dateRange, setDateRange] = useState({ from: sixMonthsAgo, to: today });
 
   const filteredLoans = loans.filter(loan => {
@@ -20,8 +22,17 @@ const Dashboard = ({ loans = [], onSelectLoan }) => {
     totalLoans: filteredLoans.length,
     totalAmountGiven: filteredLoans.reduce((s, l) => s + (parseFloat(l.amountGiven || l.loanAmount) || 0), 0),
     totalInterestPaid: filteredLoans.reduce((s, l) => s + (parseFloat(l.totalInterestPaid) || 0), 0),
-    pendingInterests: filteredLoans.reduce((s, l) => s + (parseInt(l.pending_count) || 0), 0),
+    pendingInterests: filteredLoans.filter(l => l.status !== 'closed').reduce((s, l) => s + (parseInt(l.pending_count) || 0), 0),
+    totalBankAmount: filteredLoans.reduce((s, l) => s + (parseFloat(l.bankAmount) || 0), 0),
+    totalBankSettled: filteredLoans.reduce((s, l) => s + (parseFloat(l.bankSettledAmount) || 0), 0),
   };
+
+  // Overdue loans — all active loans where next due date is before today
+  const overdueLoans = loans.filter(loan => {
+    if (loan.status === 'closed') return false;
+    const due = getNextDueDate(loan);
+    return due && new Date(due) < todayDate;
+  }).sort((a, b) => new Date(getNextDueDate(a)) - new Date(getNextDueDate(b)));
 
   // Monthly bar chart data — group all loans (not range-filtered) by month
   const monthlyMap = loans.reduce((acc, loan) => {
@@ -58,6 +69,43 @@ const Dashboard = ({ loans = [], onSelectLoan }) => {
           </div>
         </div>
       </div>
+
+      {/* Overdue Alerts */}
+      {overdueLoans.length > 0 && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-3xl p-6 shadow-xl">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 bg-red-500/20 rounded-xl flex items-center justify-center animate-pulse">
+              <Bell size={20} className="text-red-400" />
+            </div>
+            <div>
+              <h3 className="text-red-400 font-black text-lg">{overdueLoans.length} Overdue Loan{overdueLoans.length > 1 ? 's' : ''}</h3>
+              <p className="text-red-400/70 text-xs">Interest collection pending — action required</p>
+            </div>
+          </div>
+          <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+            {overdueLoans.map(loan => {
+              const due = getNextDueDate(loan);
+              const daysOverdue = Math.floor((todayDate - new Date(due)) / 86400000);
+              return (
+                <button key={loan.id} onClick={() => onSelectLoan(loan.id)}
+                  className="w-full flex items-center justify-between bg-red-500/5 hover:bg-red-500/15 border border-red-500/20 rounded-2xl px-5 py-3 transition-all group text-left">
+                  <div className="flex items-center gap-4">
+                    <AlertCircle size={16} className="text-red-400 shrink-0" />
+                    <div>
+                      <p className="text-white font-bold text-sm">{loan.customerName}</p>
+                      <p className="text-slate-400 text-xs">{loan.id} {isSuperAdmin && loan.branchName ? `· ${loan.branchName}` : ''}</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-red-400 font-black text-sm">₹{(parseFloat(loan.monthlyInterest) || 0).toLocaleString()}</p>
+                    <p className="text-red-400/70 text-xs">{daysOverdue}d overdue</p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Date Range Filter */}
       <div className="bg-slate-800/40 backdrop-blur-2xl rounded-3xl border border-white/10 p-8 shadow-2xl">
@@ -145,6 +193,48 @@ const Dashboard = ({ loans = [], onSelectLoan }) => {
             </div>
           </div>
           <p className="text-purple-400/80 text-sm font-semibold mt-6">Awaiting payment</p>
+        </div>
+      </div>
+
+      {/* Bank Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+        <div className="group relative bg-[#1e2430]/60 backdrop-blur-xl rounded-[2rem] border border-cyan-500/20 p-8 transition-all duration-500 hover:scale-[1.02] hover:shadow-[0_20px_40px_rgba(6,182,212,0.15)]">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-slate-400 text-xs font-black uppercase tracking-[0.2em] mb-3">Bank Amount Received</p>
+              <p className="text-4xl font-black text-white">₹{(stats.totalBankAmount / 100000).toFixed(1)}L</p>
+            </div>
+            <div className="p-4 bg-cyan-500/20 rounded-2xl border border-cyan-500/30">
+              <TrendingUp className="text-cyan-400" size={32} />
+            </div>
+          </div>
+          <p className="text-cyan-400/80 text-sm font-semibold mt-6">Total received from bank</p>
+        </div>
+
+        <div className="group relative bg-[#1e2420]/60 backdrop-blur-xl rounded-[2rem] border border-teal-500/20 p-8 transition-all duration-500 hover:scale-[1.02] hover:shadow-[0_20px_40px_rgba(20,184,166,0.15)]">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-slate-400 text-xs font-black uppercase tracking-[0.2em] mb-3">Bank Amount Settled</p>
+              <p className="text-4xl font-black text-white">₹{(stats.totalBankSettled / 100000).toFixed(1)}L</p>
+            </div>
+            <div className="p-4 bg-teal-500/20 rounded-2xl border border-teal-500/30">
+              <Award className="text-teal-400" size={32} />
+            </div>
+          </div>
+          <p className="text-teal-400/80 text-sm font-semibold mt-6">Settled back to bank</p>
+        </div>
+
+        <div className="group relative bg-[#2d2218]/60 backdrop-blur-xl rounded-[2rem] border border-amber-500/20 p-8 transition-all duration-500 hover:scale-[1.02] hover:shadow-[0_20px_40px_rgba(245,158,11,0.15)]">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-slate-400 text-xs font-black uppercase tracking-[0.2em] mb-3">Outstanding to Bank</p>
+              <p className="text-4xl font-black text-white">₹{(Math.max(0, stats.totalBankAmount - stats.totalBankSettled) / 100000).toFixed(1)}L</p>
+            </div>
+            <div className="p-4 bg-amber-500/20 rounded-2xl border border-amber-500/30">
+              <Target className="text-amber-400" size={32} />
+            </div>
+          </div>
+          <p className="text-amber-400/80 text-sm font-semibold mt-6">Balance due to bank</p>
         </div>
       </div>
 

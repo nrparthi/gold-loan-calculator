@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
-import { 
-  Menu, X, Home, Plus, FileText, Settings, BarChart3, 
-  ChevronDown, LogOut, LayoutDashboard 
+import {
+  Menu, X, Plus, FileText, Settings, BarChart3,
+  ChevronDown, LogOut, LayoutDashboard
 } from 'lucide-react';
 import Dashboard from './components/Dashboard';
 import MyLoans from './components/MyLoans';
@@ -49,7 +49,7 @@ const LoanManager = ({ currentBranch, onUpdateBranch, onLogout }) => {
     try {
       const loanWithBranch = { ...newLoan, branchId: currentBranch.id };
       const apiUrl = import.meta.env.VITE_API_URL;
-      const response = await axios.post(`${apiUrl}/loans`, loanWithBranch);
+      await axios.post(`${apiUrl}/loans`, loanWithBranch);
       
       await fetchLoans(); // Refresh list
       setShowBillLoan(null); // Clear the bill modal
@@ -194,8 +194,24 @@ const LoanManager = ({ currentBranch, onUpdateBranch, onLogout }) => {
             )}
             {currentPage === 'loanDetails' && selectedLoan && (
               <LoanDetails
+                key={selectedLoanId}
                 loan={selectedLoan}
                 onUpdateLoan={(updates) => handleUpdateLoan(selectedLoan.id, updates)}
+                onRenewLoan={async (newLoanId) => {
+                  try {
+                    const apiUrl = import.meta.env.VITE_API_URL;
+                    const params = isSuperAdmin ? `role=super_admin` : `branchId=${currentBranch.id}`;
+                    const response = await axios.get(`${apiUrl}/loans?${params}`);
+                    const freshLoans = response.data || [];
+                    // Batch all three updates together so selectedLoan is never undefined
+                    setLoans(freshLoans);
+                    setSelectedLoanId(newLoanId);
+                    setCurrentPage('loanDetails');
+                  } catch (err) {
+                    console.error('Error refreshing after renewal:', err);
+                    setCurrentPage('myLoans');
+                  }
+                }}
               />
             )}
             {currentPage === 'reports' && (

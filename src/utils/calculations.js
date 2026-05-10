@@ -3,6 +3,21 @@
  */
 
 /**
+ * Derive the next interest due date from loan data.
+ * Returns a YYYY-MM-DD string or null.
+ */
+export const getNextDueDate = (loan) => {
+  if (loan.nextDueDate) return loan.nextDueDate;
+  if (!loan.loanDate || loan.status === 'closed') return null;
+  const monthly = parseFloat(loan.monthlyInterest) || 0;
+  const paid = parseFloat(loan.totalInterestPaid) || 0;
+  const monthsPaid = monthly > 0 ? Math.round(paid / monthly) : 0;
+  const d = new Date(loan.loanDate);
+  d.setMonth(d.getMonth() + monthsPaid);
+  return d.toISOString().split('T')[0];
+};
+
+/**
  * Calculate total ornament value
  * @param {Array} ornaments - Array of ornament objects
  * @returns {number} Total value

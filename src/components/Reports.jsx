@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Download, TrendingUp, BarChart3, PieChart, Filter, Calendar, Activity, CheckCircle2, Clock } from 'lucide-react';
+import { useState } from 'react';
+import { Download, TrendingUp, BarChart3, PieChart, Calendar, Activity, CheckCircle2, Clock } from 'lucide-react';
 
 const Reports = ({ loans = [] }) => {
   const [dateRange, setDateRange] = useState({ 
@@ -19,6 +19,8 @@ const Reports = ({ loans = [] }) => {
     totalInterestPaid: filteredLoans.reduce((sum, l) => sum + (parseFloat(l.totalInterestPaid) || 0), 0),
     closedLoans: filteredLoans.filter(l => l.status === 'closed').length,
     activeLoans: filteredLoans.filter(l => l.status === 'active' || !l.status).length,
+    totalBankAmount: filteredLoans.reduce((sum, l) => sum + (parseFloat(l.bankAmount) || 0), 0),
+    totalBankSettled: filteredLoans.reduce((sum, l) => sum + (parseFloat(l.bankSettledAmount) || 0), 0),
   };
 
   return (
@@ -143,6 +145,34 @@ const Reports = ({ loans = [] }) => {
         </div>
       </div>
 
+      {/* Bank Metrics */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+        <div className="bg-[#1e293b]/60 backdrop-blur-xl rounded-[2rem] border border-cyan-500/20 p-8 shadow-xl">
+          <div className="flex justify-between items-start">
+            <p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">Bank Received</p>
+            <TrendingUp size={20} className="text-cyan-400" />
+          </div>
+          <p className="text-3xl font-black text-white mt-4">₹{summary.totalBankAmount.toLocaleString()}</p>
+          <p className="text-cyan-400 text-xs font-bold mt-2">Total received from bank</p>
+        </div>
+        <div className="bg-[#1e293b]/60 backdrop-blur-xl rounded-[2rem] border border-teal-500/20 p-8 shadow-xl">
+          <div className="flex justify-between items-start">
+            <p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">Bank Settled</p>
+            <CheckCircle2 size={20} className="text-teal-400" />
+          </div>
+          <p className="text-3xl font-black text-white mt-4">₹{summary.totalBankSettled.toLocaleString()}</p>
+          <p className="text-teal-400 text-xs font-bold mt-2">Settled back to bank</p>
+        </div>
+        <div className="bg-[#1e293b]/60 backdrop-blur-xl rounded-[2rem] border border-amber-500/20 p-8 shadow-xl">
+          <div className="flex justify-between items-start">
+            <p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">Outstanding to Bank</p>
+            <BarChart3 size={20} className="text-amber-400" />
+          </div>
+          <p className="text-3xl font-black text-white mt-4">₹{Math.max(0, summary.totalBankAmount - summary.totalBankSettled).toLocaleString()}</p>
+          <p className="text-amber-400 text-xs font-bold mt-2">Balance due to bank</p>
+        </div>
+      </div>
+
       {/* Detailed Table */}
       <div className="bg-slate-900/40 backdrop-blur-3xl rounded-[2.5rem] border border-white/10 overflow-hidden shadow-2xl">
         <div className="p-10 border-b border-white/5 flex justify-between items-center">
@@ -159,6 +189,8 @@ const Reports = ({ loans = [] }) => {
                 <th className="px-10 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Customer Name</th>
                 <th className="px-10 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Amount Given</th>
                 <th className="px-10 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Paid Int.</th>
+                <th className="px-10 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Bank Recv.</th>
+                <th className="px-10 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Bank Settled</th>
                 <th className="px-10 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Status</th>
                 <th className="px-10 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Loan No.</th>
               </tr>
@@ -172,6 +204,8 @@ const Reports = ({ loans = [] }) => {
                   </td>
                   <td className="px-10 py-8 font-bold text-white/90">₹{(parseFloat(loan.amountGiven || loan.loanAmount) || 0).toLocaleString()}</td>
                   <td className="px-10 py-8 font-bold text-emerald-400">₹{(parseFloat(loan.totalInterestPaid) || 0).toLocaleString()}</td>
+                  <td className="px-10 py-8 font-bold text-cyan-400">₹{(parseFloat(loan.bankAmount) || 0).toLocaleString()}</td>
+                  <td className="px-10 py-8 font-bold text-teal-400">₹{(parseFloat(loan.bankSettledAmount) || 0).toLocaleString()}</td>
                   <td className="px-10 py-8">
                     <span className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase border ${
                       loan.status === 'closed'

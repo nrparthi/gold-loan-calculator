@@ -1,24 +1,16 @@
-import React, { useState } from 'react';
-import { Search, FileText, Download, Edit3, AlertCircle, CalendarClock } from 'lucide-react';
+import { useState } from 'react';
+import { Search, FileText, Download, Edit3, AlertCircle, CalendarClock, ChevronLeft, ChevronRight } from 'lucide-react';
+import { getNextDueDate } from '../utils/calculations';
+
+const PAGE_SIZE = 25;
 
 const today = new Date(); today.setHours(0, 0, 0, 0);
-
-// If DB has no unpaid record, derive next due from loan date + months paid
-const getNextDueDate = (loan) => {
-  if (loan.nextDueDate) return loan.nextDueDate;
-  if (!loan.loanDate || loan.status === 'closed') return null;
-  const monthly = parseFloat(loan.monthlyInterest) || 0;
-  const paid = parseFloat(loan.totalInterestPaid) || 0;
-  const monthsPaid = monthly > 0 ? Math.round(paid / monthly) : 0;
-  const d = new Date(loan.loanDate);
-  d.setMonth(d.getMonth() + monthsPaid);
-  return d.toISOString().split('T')[0];
-};
 
 const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [branchFilter, setBranchFilter] = useState('all');
+  const [page, setPage] = useState(1);
 
   const branches = isSuperAdmin ? [...new Set(loans.map(l => l.branchName).filter(Boolean))].sort() : [];
 
@@ -33,6 +25,12 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
     return matchesSearch && matchesStatus && matchesBranch;
   });
 
+  const totalPages = Math.max(1, Math.ceil(filteredLoans.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pagedLoans = filteredLoans.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  const handleFilterChange = (setter) => (e) => { setter(e.target.value); setPage(1); };
+
   return (
     <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-slate-800/40 backdrop-blur-xl p-6 rounded-3xl border border-white/10 shadow-xl">
@@ -41,7 +39,7 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
             <FileText className="text-orange-400" size={32} />
             {isSuperAdmin ? 'All Loans' : 'My Loans'}
           </h1>
-          <p className="text-slate-400 font-medium mt-1">{isSuperAdmin ? `${filteredLoans.length} loans across all branches` : 'View and manage all branch loans'}</p>
+          <p className="text-slate-400 font-medium mt-1">{filteredLoans.length} loans {isSuperAdmin ? 'across all branches' : 'in this branch'}</p>
         </div>
 
         <div className="flex flex-wrap gap-3 w-full md:w-auto">
@@ -57,7 +55,7 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
           </div>
 
           {isSuperAdmin && (
-            <select value={branchFilter} onChange={e => setBranchFilter(e.target.value)}
+            <select value={branchFilter} onChange={handleFilterChange(setBranchFilter)}
               className="px-4 py-3 bg-slate-900/50 border border-white/10 rounded-2xl text-white focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all appearance-none cursor-pointer font-bold text-sm min-w-[140px]">
               <option value="all">All Branches</option>
               {branches.map(b => <option key={b} value={b}>{b}</option>)}
@@ -66,11 +64,12 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
 
           <select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onChange={handleFilterChange(setStatusFilter)}
             className="px-4 py-3 bg-slate-900/50 border border-white/10 rounded-2xl text-white focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all appearance-none cursor-pointer font-bold text-sm min-w-[120px]"
           >
             <option value="all">All Status</option>
             <option value="active">Active</option>
+            <option value="renewed">Renewed</option>
             <option value="closed">Closed</option>
           </select>
         </div>
@@ -83,7 +82,10 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
               <tr>
                 <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Customer ID</th>
                 <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Customer Name</th>
-                <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Amount Given</th>
+                <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Loan Amount</th>
+                <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Balance</th>
+                <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Interest Paid</th>
+                <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em] min-w-[120px]">Loan Date</th>
                 {isSuperAdmin && <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Branch</th>}
                 <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em] min-w-[100px]">Status</th>
                 <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em] min-w-[130px]">Next Due Date</th>
@@ -92,8 +94,8 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
-              {filteredLoans.length > 0 ? (
-                filteredLoans.map((loan) => (
+              {pagedLoans.length > 0 ? (
+                pagedLoans.map((loan) => (
                   <tr key={loan.id} className="hover:bg-white/[0.02] transition-all duration-300 group">
                     <td className="px-8 py-7 font-black text-blue-400">{loan.customerId || (loan.id?.includes('-') ? loan.id.split('-')[0] : loan.id)}</td>
                     <td className="px-8 py-7">
@@ -101,7 +103,18 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
                       <div className="text-slate-500 text-xs font-medium">{loan.customerPhone}</div>
                     </td>
                     <td className="px-8 py-7 font-bold text-white/90">
-                      ₹{(parseFloat(loan.amountGiven || loan.loanAmount) || 0).toLocaleString()}
+                      ₹{(parseFloat(loan.loanAmount) || 0).toLocaleString()}
+                    </td>
+                    <td className="px-8 py-7 font-black text-emerald-400 text-base">
+                      ₹{(parseFloat(loan.loanAmount) || 0).toLocaleString()}
+                    </td>
+                    <td className="px-8 py-7 font-black text-violet-400">
+                      ₹{(parseFloat(loan.totalInterestPaid) || 0).toLocaleString()}
+                    </td>
+                    <td className="px-8 py-7">
+                      <div className="text-white font-bold text-sm">
+                        {loan.loanDate ? new Date(loan.loanDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : '—'}
+                      </div>
                     </td>
                     {isSuperAdmin && (
                       <td className="px-8 py-7">
@@ -112,15 +125,15 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
                       {(() => {
                         const _due = getNextDueDate(loan);
                         const isOverdue = _due && new Date(_due) < today;
+                        if (loan.status === 'closed') return <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase border bg-slate-800/50 text-slate-400 border-slate-700">Closed</span>;
+                        if (loan.status === 'renewed') return <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase border bg-indigo-500/10 text-indigo-400 border-indigo-500/20">Renewed</span>;
                         return (
                           <span className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase border ${
-                            loan.status === 'closed'
-                              ? 'bg-slate-800/50 text-slate-400 border-slate-700'
-                              : isOverdue
+                            isOverdue
                               ? 'bg-red-500/10 text-red-400 border-red-500/20'
                               : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                           }`}>
-                            {loan.status === 'closed' ? 'Closed' : isOverdue ? 'Overdue' : 'Active'}
+                            {isOverdue ? 'Overdue' : 'Active'}
                           </span>
                         );
                       })()}
@@ -134,7 +147,7 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
                           <div className={`flex items-center gap-2 ${isOverdue ? 'text-red-400' : 'text-slate-300'}`}>
                             <CalendarClock size={14} className={isOverdue ? 'text-red-400' : 'text-slate-500'} />
                             <span className="text-sm font-bold">
-                              {new Date(dueDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                              {new Date(dueDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })}
                             </span>
                             {isOverdue && <AlertCircle size={13} className="text-red-400" />}
                           </div>
@@ -173,7 +186,7 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
                 ))
               ) : (
                 <tr>
-                  <td colSpan="7" className="py-20 text-center">
+                  <td colSpan="9" className="py-20 text-center">
                     <div className="flex flex-col items-center gap-4">
                       <div className="p-6 bg-slate-800 rounded-full">
                         <Search size={40} className="text-slate-600" />
@@ -187,6 +200,40 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
           </table>
         </div>
       </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between px-4 py-3 bg-slate-800/40 backdrop-blur-xl rounded-2xl border border-white/10">
+          <span className="text-slate-400 text-sm font-medium">
+            Showing {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filteredLoans.length)} of {filteredLoans.length} loans
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              className="p-2 rounded-xl bg-slate-900/50 border border-white/10 text-slate-400 hover:text-white hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+            ><ChevronLeft size={16} /></button>
+            {Array.from({ length: totalPages }, (_, i) => i + 1)
+              .filter(p => p === 1 || p === totalPages || Math.abs(p - currentPage) <= 1)
+              .reduce((acc, p, idx, arr) => {
+                if (idx > 0 && p - arr[idx - 1] > 1) acc.push('...');
+                acc.push(p);
+                return acc;
+              }, [])
+              .map((p, i) => p === '...'
+                ? <span key={`e${i}`} className="px-2 text-slate-500">…</span>
+                : <button key={p} onClick={() => setPage(p)}
+                    className={`w-9 h-9 rounded-xl text-sm font-bold transition-all ${currentPage === p ? 'bg-blue-600 text-white' : 'bg-slate-900/50 border border-white/10 text-slate-400 hover:text-white hover:bg-slate-700'}`}
+                  >{p}</button>
+              )}
+            <button
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              disabled={currentPage === totalPages}
+              className="p-2 rounded-xl bg-slate-900/50 border border-white/10 text-slate-400 hover:text-white hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+            ><ChevronRight size={16} /></button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
