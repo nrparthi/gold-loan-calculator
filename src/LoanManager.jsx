@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
-import axios from 'axios';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import api, { getErrorMessage } from './api';
+import { useToastContext } from './components/Toast';
 import {
   Menu, X, Plus, FileText, Settings, BarChart3,
-  ChevronDown, LogOut, LayoutDashboard
+  ChevronDown, LogOut, LayoutDashboard, Bell, AlertCircle
 } from 'lucide-react';
 import Dashboard from './components/Dashboard';
 import MyLoans from './components/MyLoans';
@@ -13,88 +14,133 @@ import SettingsPage from './components/Settings';
 import BillModal from './components/BillModal';
 import Loader from './components/Loader';
 
-const LoanManager = ({ currentBranch, onUpdateBranch, onLogout }) => {
+const useSessionCountdown = (expiresAt) => {
+  const calc = () => {
+    const ms = (expiresAt || 0) - Date.now();
+    if (ms <= 0) return { label: '00:00', warning: true };
+    const totalMins = Math.floor(ms / 60000);
+    const h = Math.floor(totalMins / 60);
+    const m = totalMins % 60;
+    return {
+      label: h > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`,
+      warning: totalMins < 10,
+    };
+  };
+  const [countdown, setCountdown] = useState(calc);
+  useEffect(() => {
+    if (!expiresAt) return;
+    const id = setInterval(() => setCountdown(calc()), 30000);
+    return () => clearInterval(id);
+  }, [expiresAt]);
+  return countdown;
+};
+
+const LoanManager = ({ currentBranch, onUpdateBranch, onLogout, sessionExpiresAt }) => {
+  const { showError, showSuccess } = useToastContext();
   const [currentPage, setCurrentPage] = useState('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [loans, setLoans] = useState([]);
-  const [selectedLoanId, setSelectedLoanId] = useState(null);
+  const [selectedLoan, setSelectedLoan] = useState(null);
   const [showBillLoan, setShowBillLoan] = useState(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  const [autoPayInterest, setAutoPayInterest] = useState(false);
+  const [overdueLoans, setOverdueLoans] = useState([]);
+  const [totalInterestPaid, setTotalInterestPaid] = useState(0);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const isSuperAdmin = currentBranch?.role === 'super_admin';
+  const sessionCountdown = useSessionCountdown(sessionExpiresAt);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const notifRef = useRef(null);
+  const [branches, setBranches] = useState([]);
 
-  const fetchLoans = async () => {
-    if (!currentBranch) return;
-    try {
-      const apiUrl = import.meta.env.VITE_API_URL;
-      const params = isSuperAdmin
-        ? `role=super_admin`
-        : `branchId=${currentBranch.id}`;
-      const response = await axios.get(`${apiUrl}/loans?${params}`);
-      setLoans(response.data || []);
-    } catch (error) {
-      console.error('Error fetching loans:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchLoans();
-  }, [currentBranch]);
-
-  const handleAddLoan = async (newLoan) => {
-    setActionLoading(true);
-    try {
-      const loanWithBranch = { ...newLoan, branchId: currentBranch.id };
-      const apiUrl = import.meta.env.VITE_API_URL;
-      await axios.post(`${apiUrl}/loans`, loanWithBranch);
-      
-      await fetchLoans(); // Refresh list
-      setShowBillLoan(null); // Clear the bill modal
-      setCurrentPage('dashboard'); // Go to dashboard
-    } catch (error) {
-      console.error('Error creating loan:', error);
-      alert('Failed to create loan');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleUpdateLoan = async (loanId, updates) => {
-    setActionLoading(true);
-    try {
-      const apiUrl = import.meta.env.VITE_API_URL;
-      const loanToUpdate = loans.find(l => l.id === loanId);
-      const updatedLoan = { ...loanToUpdate, ...updates };
-      
-      await axios.put(`${apiUrl}/loans/${loanId}`, updatedLoan);
-      await fetchLoans(); // Refresh list
-    } catch (error) {
-      console.error('Error updating loan:', error);
-      alert('Failed to update loan');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleSelectLoan = (id) => {
-    setSelectedLoanId(id);
-    setCurrentPage('loanDetails');
-  };
-
-  const selectedLoan = loans.find(l => l.id === selectedLoanId);
-
-  const navItems = [
+  const navItems = useMemo(() => [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, color: 'from-blue-500 to-cyan-500' },
     ...(!isSuperAdmin ? [{ id: 'loanCreation', label: 'New Loan', icon: Plus, color: 'from-purple-500 to-pink-500' }] : []),
     { id: 'myLoans', label: isSuperAdmin ? 'All Loans' : 'My Loans', icon: FileText, color: 'from-orange-500 to-red-500' },
     { id: 'reports', label: 'Reports', icon: BarChart3, color: 'from-green-500 to-emerald-500' },
     { id: 'settings', label: 'Settings', icon: Settings, color: 'from-indigo-500 to-purple-500' }
-  ];
+  ], [isSuperAdmin]);
 
-  const totalInterestPaid = loans.reduce((sum, l) => sum + (parseFloat(l.totalInterestPaid) || 0), 0);
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (notifRef.current && !notifRef.current.contains(e.target)) setShowNotifications(false);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const fetchSummary = useCallback(async () => {
+    if (!currentBranch) return;
+    try {
+      const params = isSuperAdmin ? { role: 'super_admin' } : { branchId: currentBranch.id };
+      const res = await api.get('/loans/summary', { params });
+      setOverdueLoans(res.data.overdueLoans || []);
+      setTotalInterestPaid(res.data.totalInterestPaid || 0);
+    } catch (err) {
+      showError(getErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [currentBranch, isSuperAdmin, showError]);
+
+  useEffect(() => {
+    fetchSummary();
+    if (isSuperAdmin) {
+      api.get('/branches', { params: { role: 'super_admin' } })
+        .then(r => setBranches(r.data || []))
+        .catch(err => showError(getErrorMessage(err)));
+    }
+  }, [currentBranch]);
+
+  const handleAddLoan = useCallback(async (newLoan) => {
+    setActionLoading(true);
+    try {
+      await api.post('/loans', { ...newLoan, branchId: currentBranch.id });
+      setShowBillLoan(null);
+      setCurrentPage('dashboard');
+      setRefreshKey(k => k + 1);
+      fetchSummary();
+      showSuccess('Loan created successfully');
+    } catch (err) {
+      showError(getErrorMessage(err));
+    } finally {
+      setActionLoading(false);
+    }
+  }, [currentBranch, showSuccess, showError, fetchSummary]);
+
+  const handleUpdateLoan = useCallback(async (loanId, updates) => {
+    setActionLoading(true);
+    try {
+      const updatedLoan = { ...selectedLoan, ...updates };
+      await api.put(`/loans/${loanId}`, updatedLoan);
+      setSelectedLoan(prev => prev?.id === loanId ? { ...prev, ...updates } : prev);
+      setRefreshKey(k => k + 1);
+      fetchSummary();
+    } catch (err) {
+      showError(getErrorMessage(err));
+      // Resync selected loan from server on failure
+      api.get(`/loans/${loanId}`).then(r => setSelectedLoan(r.data)).catch(() => {});
+    } finally {
+      setActionLoading(false);
+    }
+  }, [selectedLoan, showError, fetchSummary]);
+
+  const handleSelectLoan = useCallback(async (loanOrId, openPay = false) => {
+    setAutoPayInterest(openPay);
+    setCurrentPage('loanDetails');
+    if (loanOrId && typeof loanOrId === 'object') {
+      setSelectedLoan(loanOrId);
+    } else {
+      try {
+        const res = await api.get(`/loans/${loanOrId}`);
+        setSelectedLoan(res.data);
+      } catch (err) {
+        showError(getErrorMessage(err));
+        setCurrentPage('myLoans');
+      }
+    }
+  }, [showError]);
 
   return (
     <div className="flex h-screen bg-[#0f172a] text-slate-200 overflow-hidden font-sans">
@@ -142,6 +188,50 @@ const LoanManager = ({ currentBranch, onUpdateBranch, onLogout }) => {
           })}
         </nav>
 
+        {/* Overdue Notification Bell */}
+        <div className="px-6 mb-2 relative" ref={notifRef}>
+          <button
+            onClick={() => setShowNotifications(v => !v)}
+            className="w-full flex items-center justify-between px-4 py-3 rounded-2xl bg-slate-900/50 border border-white/5 hover:border-white/10 transition-all"
+          >
+            <div className="flex items-center gap-3">
+              <Bell size={18} className={overdueLoans.length > 0 ? 'text-amber-400' : 'text-slate-500'} />
+              <span className="text-sm font-bold text-slate-400">Notifications</span>
+            </div>
+            {overdueLoans.length > 0 && (
+              <span className="px-2 py-0.5 bg-red-500 text-white text-[10px] font-black rounded-full">{overdueLoans.length}</span>
+            )}
+          </button>
+
+          {showNotifications && (
+            <div className="absolute bottom-14 left-0 right-0 mx-6 bg-slate-800 border border-white/10 rounded-2xl shadow-2xl overflow-hidden z-50">
+              <div className="p-4 border-b border-white/5 flex items-center gap-2">
+                <AlertCircle size={16} className="text-amber-400" />
+                <span className="text-white font-black text-sm">Overdue Loans</span>
+              </div>
+              {overdueLoans.length === 0 ? (
+                <div className="p-6 text-center text-slate-500 text-sm font-medium">All loans are up to date</div>
+              ) : (
+                <div className="max-h-72 overflow-y-auto divide-y divide-white/5">
+                  {overdueLoans.map(loan => (
+                    <button
+                      key={loan.id}
+                      onClick={() => { handleSelectLoan(loan.id, true); setShowNotifications(false); }}
+                      className="w-full text-left px-4 py-3 hover:bg-white/5 transition-all"
+                    >
+                      <div className="text-white font-bold text-sm">{loan.customerName}</div>
+                      <div className="text-red-400 text-xs font-medium mt-0.5">
+                        Due: {(() => { const d = new Date(loan.lastPaidDate); d.setMonth(d.getMonth() + 1); return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }); })()}
+                      </div>
+                      <div className="text-slate-500 text-xs">₹{(parseFloat(loan.monthlyInterest) || 0).toLocaleString()} pending</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* Total Interest Card - Matching Screenshot */}
         <div className="p-6 mt-auto">
           <div className="bg-[#1e293b] rounded-3xl p-6 border border-white/5 shadow-2xl relative overflow-hidden group">
@@ -150,9 +240,20 @@ const LoanManager = ({ currentBranch, onUpdateBranch, onLogout }) => {
             <p className="text-3xl font-black text-white tracking-tight">₹{totalInterestPaid.toLocaleString()}</p>
           </div>
           
-          <button 
+          <div className={`flex items-center justify-between px-4 py-2.5 rounded-xl mb-3 border ${
+            sessionCountdown.warning
+              ? 'bg-red-500/10 border-red-500/30 text-red-400 animate-pulse'
+              : 'bg-white/5 border-white/5 text-slate-400'
+          }`}>
+            <span className="text-[10px] font-black uppercase tracking-widest">Session</span>
+            <span className={`text-xs font-black tabular-nums ${sessionCountdown.warning ? 'text-red-400' : 'text-slate-300'}`}>
+              {sessionCountdown.label}
+            </span>
+          </div>
+
+          <button
             onClick={onLogout}
-            className="w-full mt-6 flex items-center justify-center gap-3 px-6 py-4 bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white rounded-2xl font-bold transition-all duration-300 border border-red-500/20 shadow-lg"
+            className="w-full flex items-center justify-center gap-3 px-6 py-4 bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white rounded-2xl font-bold transition-all duration-300 border border-red-500/20 shadow-lg"
           >
             <LogOut size={20} />
             <span>Logout</span>
@@ -180,10 +281,20 @@ const LoanManager = ({ currentBranch, onUpdateBranch, onLogout }) => {
         <div className="flex-1 overflow-y-auto custom-scrollbar relative z-10 p-6 lg:p-12">
           <div className="max-w-7xl mx-auto pb-20">
             {currentPage === 'dashboard' && (
-              <Dashboard loans={loans} onSelectLoan={handleSelectLoan} isSuperAdmin={isSuperAdmin} />
+              <Dashboard
+                currentBranch={currentBranch}
+                isSuperAdmin={isSuperAdmin}
+                onSelectLoan={handleSelectLoan}
+                overdueLoans={overdueLoans}
+              />
             )}
             {currentPage === 'myLoans' && (
-              <MyLoans loans={loans} onSelectLoan={handleSelectLoan} isSuperAdmin={isSuperAdmin} />
+              <MyLoans
+                currentBranch={currentBranch}
+                isSuperAdmin={isSuperAdmin}
+                onSelectLoan={handleSelectLoan}
+                refreshKey={refreshKey}
+              />
             )}
             {currentPage === 'loanCreation' && !isSuperAdmin && (
               <LoanCreation
@@ -194,28 +305,24 @@ const LoanManager = ({ currentBranch, onUpdateBranch, onLogout }) => {
             )}
             {currentPage === 'loanDetails' && selectedLoan && (
               <LoanDetails
-                key={selectedLoanId}
+                key={selectedLoan.id}
                 loan={selectedLoan}
+                autoPayInterest={autoPayInterest}
                 onUpdateLoan={(updates) => handleUpdateLoan(selectedLoan.id, updates)}
                 onRenewLoan={async (newLoanId) => {
                   try {
-                    const apiUrl = import.meta.env.VITE_API_URL;
-                    const params = isSuperAdmin ? `role=super_admin` : `branchId=${currentBranch.id}`;
-                    const response = await axios.get(`${apiUrl}/loans?${params}`);
-                    const freshLoans = response.data || [];
-                    // Batch all three updates together so selectedLoan is never undefined
-                    setLoans(freshLoans);
-                    setSelectedLoanId(newLoanId);
-                    setCurrentPage('loanDetails');
+                    await handleSelectLoan(newLoanId);
+                    setRefreshKey(k => k + 1);
+                    fetchSummary();
                   } catch (err) {
-                    console.error('Error refreshing after renewal:', err);
+                    showError(getErrorMessage(err));
                     setCurrentPage('myLoans');
                   }
                 }}
               />
             )}
             {currentPage === 'reports' && (
-              <Reports loans={loans} isSuperAdmin={isSuperAdmin} />
+              <Reports isSuperAdmin={isSuperAdmin} branches={branches} currentBranch={currentBranch} />
             )}
             {currentPage === 'settings' && (
               <SettingsPage

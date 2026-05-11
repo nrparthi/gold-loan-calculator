@@ -1,4 +1,5 @@
--- Branches table
+-- Core tables — safe to re-run (IF NOT EXISTS)
+
 CREATE TABLE IF NOT EXISTS branches (
     id TEXT PRIMARY KEY,
     username TEXT UNIQUE NOT NULL,
@@ -11,7 +12,6 @@ CREATE TABLE IF NOT EXISTS branches (
     storage_path TEXT
 );
 
--- Customers table
 CREATE TABLE IF NOT EXISTS customers (
     id TEXT PRIMARY KEY,
     branch_id TEXT REFERENCES branches(id),
@@ -23,7 +23,6 @@ CREATE TABLE IF NOT EXISTS customers (
     aadhar_photo TEXT
 );
 
--- Loans table
 CREATE TABLE IF NOT EXISTS loans (
     id TEXT PRIMARY KEY,
     branch_id TEXT REFERENCES branches(id),
@@ -49,7 +48,6 @@ CREATE TABLE IF NOT EXISTS loans (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Interest Payments table
 CREATE TABLE IF NOT EXISTS interest_payments (
     id SERIAL PRIMARY KEY,
     loan_id TEXT REFERENCES loans(id) ON DELETE CASCADE,
@@ -62,7 +60,6 @@ CREATE TABLE IF NOT EXISTS interest_payments (
     carry_forward DECIMAL(12,2) DEFAULT 0
 );
 
--- Part Payments table
 CREATE TABLE IF NOT EXISTS part_payments (
     id VARCHAR(50) PRIMARY KEY,
     loan_id VARCHAR(50) REFERENCES loans(id) ON DELETE CASCADE,
@@ -74,7 +71,6 @@ CREATE TABLE IF NOT EXISTS part_payments (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
--- Ornaments Config table
 CREATE TABLE IF NOT EXISTS ornaments_config (
     id TEXT PRIMARY KEY,
     branch_id TEXT,
@@ -83,7 +79,6 @@ CREATE TABLE IF NOT EXISTS ornaments_config (
     purity DECIMAL(5,1) DEFAULT 916
 );
 
--- Audit Logs table
 CREATE TABLE IF NOT EXISTS audit_logs (
     id SERIAL PRIMARY KEY,
     branch_id TEXT,

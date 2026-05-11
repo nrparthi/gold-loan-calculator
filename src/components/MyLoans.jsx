@@ -1,35 +1,66 @@
-import { useState } from 'react';
-import { Search, FileText, Download, Edit3, AlertCircle, CalendarClock, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { Search, FileText, Download, Edit3, AlertCircle, CalendarClock, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
+import api, { getErrorMessage } from '../api';
+import { useToastContext } from './Toast';
 import { getNextDueDate } from '../utils/calculations';
 
 const PAGE_SIZE = 25;
-
 const today = new Date(); today.setHours(0, 0, 0, 0);
 
-const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
+const MyLoans = ({ currentBranch, isSuperAdmin = false, onSelectLoan, refreshKey = 0 }) => {
+  const { showError } = useToastContext();
+  const [loans, setLoans] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [branchFilter, setBranchFilter] = useState('all');
-  const [page, setPage] = useState(1);
+  const [branchNames, setBranchNames] = useState([]);
 
-  const branches = isSuperAdmin ? [...new Set(loans.map(l => l.branchName).filter(Boolean))].sort() : [];
+  const fetchPage = useCallback(async (p) => {
+    if (!currentBranch) return;
+    setLoading(true);
+    try {
+      const params = {
+        page: p,
+        limit: PAGE_SIZE,
+        ...(searchTerm && { search: searchTerm }),
+        ...(statusFilter !== 'all' && { status: statusFilter }),
+        ...(isSuperAdmin ? { role: 'super_admin' } : { branchId: currentBranch.id }),
+        ...(isSuperAdmin && branchFilter !== 'all' && { branchFilter }),
+      };
+      const res = await api.get('/loans', { params });
+      setLoans(res.data.loans || []);
+      setTotal(res.data.total || 0);
+      setTotalPages(res.data.totalPages || 1);
+      // Collect branch names for the filter dropdown
+      if (isSuperAdmin) {
+        setBranchNames(prev => {
+          const merged = new Set([...prev, ...(res.data.loans || []).map(l => l.branchName).filter(Boolean)]);
+          return [...merged].sort();
+        });
+      }
+    } catch (err) {
+      showError(getErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [currentBranch, isSuperAdmin, searchTerm, statusFilter, branchFilter, showError]);
 
-  const filteredLoans = loans.filter(loan => {
-    const matchesSearch =
-      loan.customerName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      loan.id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      loan.customerPhone?.includes(searchTerm) ||
-      loan.bankLoanNumber?.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStatus = statusFilter === 'all' || loan.status === statusFilter;
-    const matchesBranch = !isSuperAdmin || branchFilter === 'all' || loan.branchName === branchFilter;
-    return matchesSearch && matchesStatus && matchesBranch;
-  });
+  // Re-fetch when page changes or parent triggers a refresh (after add/update)
+  useEffect(() => { fetchPage(page); }, [page, refreshKey]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredLoans.length / PAGE_SIZE));
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setPage(1);
+    fetchPage(1);
+  }, [searchTerm, statusFilter, branchFilter]);
+
+  const handleFilterChange = (setter) => (e) => { setter(e.target.value); };
+
   const currentPage = Math.min(page, totalPages);
-  const pagedLoans = filteredLoans.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
-
-  const handleFilterChange = (setter) => (e) => { setter(e.target.value); setPage(1); };
 
   return (
     <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
@@ -39,7 +70,7 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
             <FileText className="text-orange-400" size={32} />
             {isSuperAdmin ? 'All Loans' : 'My Loans'}
           </h1>
-          <p className="text-slate-400 font-medium mt-1">{filteredLoans.length} loans {isSuperAdmin ? 'across all branches' : 'in this branch'}</p>
+          <p className="text-slate-400 font-medium mt-1">{total} loans {isSuperAdmin ? 'across all branches' : 'in this branch'}</p>
         </div>
 
         <div className="flex flex-wrap gap-3 w-full md:w-auto">
@@ -54,11 +85,11 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
             />
           </div>
 
-          {isSuperAdmin && (
+          {isSuperAdmin && branchNames.length > 0 && (
             <select value={branchFilter} onChange={handleFilterChange(setBranchFilter)}
               className="px-4 py-3 bg-slate-900/50 border border-white/10 rounded-2xl text-white focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all appearance-none cursor-pointer font-bold text-sm min-w-[140px]">
               <option value="all">All Branches</option>
-              {branches.map(b => <option key={b} value={b}>{b}</option>)}
+              {branchNames.map(b => <option key={b} value={b}>{b}</option>)}
             </select>
           )}
 
@@ -94,8 +125,17 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
-              {pagedLoans.length > 0 ? (
-                pagedLoans.map((loan) => (
+              {loading ? (
+                <tr>
+                  <td colSpan="11" className="py-20 text-center">
+                    <div className="flex items-center justify-center gap-3 text-slate-500">
+                      <Loader2 size={24} className="animate-spin" />
+                      <span className="font-bold">Loading loans…</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : loans.length > 0 ? (
+                loans.map((loan) => (
                   <tr key={loan.id} className="hover:bg-white/[0.02] transition-all duration-300 group">
                     <td className="px-8 py-7 font-black text-blue-400">{loan.customerId || (loan.id?.includes('-') ? loan.id.split('-')[0] : loan.id)}</td>
                     <td className="px-8 py-7">
@@ -129,9 +169,7 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
                         if (loan.status === 'renewed') return <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase border bg-indigo-500/10 text-indigo-400 border-indigo-500/20">Renewed</span>;
                         return (
                           <span className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase border ${
-                            isOverdue
-                              ? 'bg-red-500/10 text-red-400 border-red-500/20'
-                              : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                            isOverdue ? 'bg-red-500/10 text-red-400 border-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                           }`}>
                             {isOverdue ? 'Overdue' : 'Active'}
                           </span>
@@ -160,7 +198,7 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
                     <td className="px-8 py-7 text-right">
                       <div className="hidden group-hover:flex justify-end items-center gap-2 transition-all duration-300">
                         <button
-                          onClick={() => onSelectLoan(loan.id)}
+                          onClick={() => onSelectLoan(loan)}
                           className="p-2.5 bg-blue-500/10 text-blue-400 hover:bg-blue-500 hover:text-white rounded-xl transition-all"
                           title="Edit Loan"
                         >
@@ -175,7 +213,7 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
                       </div>
                       <div className="group-hover:hidden flex justify-end">
                         <button
-                          onClick={() => onSelectLoan(loan.id)}
+                          onClick={() => onSelectLoan(loan)}
                           className="px-4 py-2 bg-slate-800/50 text-slate-400 rounded-xl text-xs font-bold border border-white/5 hover:bg-slate-700 transition-all"
                         >
                           Details
@@ -186,7 +224,7 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
                 ))
               ) : (
                 <tr>
-                  <td colSpan="9" className="py-20 text-center">
+                  <td colSpan="11" className="py-20 text-center">
                     <div className="flex flex-col items-center gap-4">
                       <div className="p-6 bg-slate-800 rounded-full">
                         <Search size={40} className="text-slate-600" />
@@ -201,16 +239,15 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
         </div>
       </div>
 
-      {/* Pagination */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between px-4 py-3 bg-slate-800/40 backdrop-blur-xl rounded-2xl border border-white/10">
           <span className="text-slate-400 text-sm font-medium">
-            Showing {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filteredLoans.length)} of {filteredLoans.length} loans
+            Showing {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, total)} of {total} loans
           </span>
           <div className="flex items-center gap-2">
             <button
               onClick={() => setPage(p => Math.max(1, p - 1))}
-              disabled={currentPage === 1}
+              disabled={currentPage === 1 || loading}
               className="p-2 rounded-xl bg-slate-900/50 border border-white/10 text-slate-400 hover:text-white hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
             ><ChevronLeft size={16} /></button>
             {Array.from({ length: totalPages }, (_, i) => i + 1)
@@ -228,7 +265,7 @@ const MyLoans = ({ loans = [], onSelectLoan, isSuperAdmin = false }) => {
               )}
             <button
               onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-              disabled={currentPage === totalPages}
+              disabled={currentPage === totalPages || loading}
               className="p-2 rounded-xl bg-slate-900/50 border border-white/10 text-slate-400 hover:text-white hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
             ><ChevronRight size={16} /></button>
           </div>

@@ -19,7 +19,7 @@ const LoanCreation = ({ onAddLoan, onPreviewBill, defaultInterestRate = 1.5, cur
     ornamentPhoto: null,
     customerPhoto: null,
     aadharPhoto: null,
-    ornaments: [{ type: '', specification: '', quantity: 1, grossWt: 0, netWt: 0, ratePerGram: 0, value: 0, photo: null }]
+    ornaments: [{ type: '', specification: '', quantity: 1, grossWt: 0, netWt: 0, ratePerGram: 0, purity: 916, value: 0, photo: null }]
   });
 
   const [customerStatus, setCustomerStatus] = useState(null); // 'existing' or 'new'
@@ -218,15 +218,16 @@ const LoanCreation = ({ onAddLoan, onPreviewBill, defaultInterestRate = 1.5, cur
     const updatedOrnaments = [...formData.ornaments];
     
     if (field === 'type') {
-      const selectedConfig = ornamentConfigs.find(o => o.name === value && o.metalType === formData.ornamentCategory);
       updatedOrnaments[index].type = value;
       const currentRate = formData.ornamentCategory === 'GOLD' ? branchRates.goldRate : branchRates.silverRate;
       updatedOrnaments[index].ratePerGram = currentRate;
-      updatedOrnaments[index].value = updatedOrnaments[index].netWt * currentRate;
+      const purity = updatedOrnaments[index].purity || 1000;
+      updatedOrnaments[index].value = updatedOrnaments[index].netWt * currentRate * (purity / 1000);
     } else {
-      updatedOrnaments[index][field] = field === 'quantity' || field === 'grossWt' || field === 'netWt' || field === 'ratePerGram' ? parseFloat(value) || 0 : value;
-      if (['netWt', 'ratePerGram'].includes(field)) {
-        updatedOrnaments[index].value = updatedOrnaments[index].netWt * updatedOrnaments[index].ratePerGram;
+      updatedOrnaments[index][field] = ['quantity', 'grossWt', 'netWt', 'ratePerGram', 'purity'].includes(field) ? parseFloat(value) || 0 : value;
+      if (['netWt', 'ratePerGram', 'purity'].includes(field)) {
+        const purity = updatedOrnaments[index].purity || 1000;
+        updatedOrnaments[index].value = updatedOrnaments[index].netWt * updatedOrnaments[index].ratePerGram * (purity / 1000);
       }
     }
     setFormData(prev => ({ ...prev, ornaments: updatedOrnaments }));
@@ -244,7 +245,7 @@ const LoanCreation = ({ onAddLoan, onPreviewBill, defaultInterestRate = 1.5, cur
   const addOrnament = () => {
     setFormData(prev => ({
       ...prev,
-      ornaments: [...prev.ornaments, { type: '', specification: '', quantity: 1, grossWt: 0, netWt: 0, ratePerGram: 0, value: 0, photo: null }]
+      ornaments: [...prev.ornaments, { type: '', specification: '', quantity: 1, grossWt: 0, netWt: 0, ratePerGram: 0, purity: 916, value: 0, photo: null }]
     }));
   };
 
@@ -296,7 +297,7 @@ const LoanCreation = ({ onAddLoan, onPreviewBill, defaultInterestRate = 1.5, cur
         ornamentPhoto: null,
         customerPhoto: null,
         aadharPhoto: null,
-        ornaments: [{ type: '', specification: '', quantity: 1, grossWt: 0, netWt: 0, ratePerGram: 0, value: 0 }]
+        ornaments: [{ type: '', specification: '', quantity: 1, grossWt: 0, netWt: 0, ratePerGram: 0, purity: 916, value: 0 }]
       });
     }
   };
@@ -511,12 +512,12 @@ const LoanCreation = ({ onAddLoan, onPreviewBill, defaultInterestRate = 1.5, cur
 
           {/* Table Header (Hidden on small screens) */}
           <div className="hidden lg:grid grid-cols-12 gap-4 ml-11 mb-2 px-4 text-sm font-semibold text-slate-400">
-            <div className="col-span-2">Ornament</div>
-            <div className="col-span-2">Specification</div>
+            <div className="col-span-3">Ornament</div>
             <div className="col-span-1 text-center">Qty</div>
             <div className="col-span-1 text-center">Gross wt.</div>
             <div className="col-span-1 text-center">Net wt.</div>
             <div className="col-span-1 text-center">Rate</div>
+            <div className="col-span-1 text-center">Purity</div>
             <div className="col-span-2 text-center">Value</div>
             <div className="col-span-2 text-center">Action</div>
           </div>
@@ -527,21 +528,16 @@ const LoanCreation = ({ onAddLoan, onPreviewBill, defaultInterestRate = 1.5, cur
               <div key={index} className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-center bg-slate-700/30 p-4 rounded-xl border border-white/5 hover:border-white/10 transition-all">
                 
                 {/* Mobile Labels are handled via placeholders or small text for simplicity, matching the grid layout */}
-                <div className="col-span-1 lg:col-span-2">
+                <div className="col-span-1 lg:col-span-3">
                   <label className="block lg:hidden text-xs text-slate-400 mb-1">Ornament</label>
-                  <select 
-                    value={ornament.type} 
-                    onChange={(e) => handleOrnamentChange(index, 'type', e.target.value)} 
+                  <select
+                    value={ornament.type}
+                    onChange={(e) => handleOrnamentChange(index, 'type', e.target.value)}
                     className="w-full px-3 py-2.5 bg-slate-800/80 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
                   >
                     <option value="">Select Ornament</option>
                     {availableOrnaments.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
                   </select>
-                </div>
-                
-                <div className="col-span-1 lg:col-span-2">
-                  <label className="block lg:hidden text-xs text-slate-400 mb-1">Specification</label>
-                  <input type="text" placeholder="e.g. 916" value={ornament.specification} onChange={(e) => handleOrnamentChange(index, 'specification', e.target.value)} className="w-full px-3 py-2.5 bg-slate-800/80 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500" />
                 </div>
 
                 <div className="col-span-1 lg:col-span-1">
@@ -562,6 +558,11 @@ const LoanCreation = ({ onAddLoan, onPreviewBill, defaultInterestRate = 1.5, cur
                 <div className="col-span-1 lg:col-span-1">
                   <label className="block lg:hidden text-xs text-slate-400 mb-1">Rate/gram</label>
                   <input type="number" value={ornament.ratePerGram} onChange={(e) => handleOrnamentChange(index, 'ratePerGram', e.target.value)} className="w-full px-2 py-2.5 bg-slate-800/80 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 text-center text-sm" />
+                </div>
+
+                <div className="col-span-1 lg:col-span-1">
+                  <label className="block lg:hidden text-xs text-slate-400 mb-1">Purity</label>
+                  <input type="number" placeholder="916" value={ornament.purity ?? 916} onChange={(e) => handleOrnamentChange(index, 'purity', e.target.value)} title="Purity (e.g. 916=22k, 750=18k, 585=14k)" className="w-full px-2 py-2.5 bg-slate-800/80 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 text-center text-sm" />
                 </div>
 
                 <div className="col-span-1 lg:col-span-2">

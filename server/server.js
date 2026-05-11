@@ -11,7 +11,16 @@ const jwt = require('jsonwebtoken');
 const os = require('os');
 const { google } = require('googleapis');
 const cloudinary = require('cloudinary').v2;
+const pino = require('pino');
 const db = require('./db');
+const { runMigrations } = require('./migrate');
+
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  ...(process.env.NODE_ENV !== 'production' && {
+    transport: { target: 'pino-pretty', options: { colorize: true } }
+  })
+});
 
 // ── Cloudinary config ─────────────────────────────────────────────────────────
 cloudinary.config({
@@ -66,6 +75,12 @@ const getDriveConfig = () => {
 // Find or create a folder inside a parent
 // ─────────────────────────────────────────────────────────────────────────────
 
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  logger.fatal('JWT_SECRET environment variable is not set — server will not start');
+  process.exit(1);
+}
+
 const app = express();
 const PORT = process.env.PORT;
 
@@ -85,12 +100,35 @@ app.use(cors({
   credentials: true
 }));
 
+// General API rate limit
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 1000
+  max: 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 app.use('/api/', limiter);
-app.use(express.json());
+
+// Strict login rate limit — 10 attempts per 15 min per IP
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts. Please try again in 15 minutes.' },
+});
+
+// Body size cap — prevent oversized payloads
+app.use(express.json({ limit: '2mb' }));
+
+// Request timeout — kill hung requests after 30s
+app.use((_req, res, next) => {
+  res.setTimeout(30000, () => {
+    if (!res.headersSent) res.status(408).json({ error: 'Request timeout' });
+  });
+  next();
+});
+
 
 // Configure Multer — use memory storage so we can write to organized paths
 const DEFAULT_UPLOADS_DIR = path.join(__dirname, 'uploads');
@@ -106,39 +144,17 @@ app.use('/uploads', async (req, res) => {
       if (fs.existsSync(filePath)) return res.sendFile(filePath);
     }
   } catch (err) {
-    console.error('Upload serve error:', err.message);
+    logger.error({ err: err.message }, 'Upload serve error');
   }
   res.status(404).send('Not found');
 });
 
 
-// Database Initialization (Optional for Postgres as we usually run schema.sql)
-// But I'll add a simple check to seed admin if empty
 const initDb = async () => {
   try {
-    // Add role column if not exists
-    await db.query(`ALTER TABLE branches ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'branch'`);
+    await runMigrations(logger);
 
-    // Bank amount tracking columns
-    await db.query(`ALTER TABLE loans ADD COLUMN IF NOT EXISTS bank_amount DECIMAL(12,2) DEFAULT 0`);
-    await db.query(`ALTER TABLE loans ADD COLUMN IF NOT EXISTS bank_settled_amount DECIMAL(12,2) DEFAULT 0`);
-
-    // Carry forward for partial interest payments
-    await db.query(`ALTER TABLE interest_payments ADD COLUMN IF NOT EXISTS carry_forward DECIMAL(12,2) DEFAULT 0`);
-
-    // Part payments log table
-    await db.query(`CREATE TABLE IF NOT EXISTS part_payments (
-      id VARCHAR(50) PRIMARY KEY,
-      loan_id VARCHAR(50) REFERENCES loans(id) ON DELETE CASCADE,
-      amount DECIMAL(12,2) NOT NULL,
-      payment_date DATE,
-      payment_mode VARCHAR(20) DEFAULT 'CASH',
-      balance_after DECIMAL(12,2),
-      is_foreclosure BOOLEAN DEFAULT FALSE,
-      created_at TIMESTAMP DEFAULT NOW()
-    )`);
-
-    // Seed or sync super admin credentials from env vars (skip if not configured)
+    // Seed super admin from env vars
     const saUsername = process.env.SUPER_ADMIN_USERNAME;
     const saPassword = process.env.SUPER_ADMIN_PASSWORD;
     if (saUsername && saPassword) {
@@ -149,16 +165,13 @@ const initDb = async () => {
           `INSERT INTO branches (id, username, password, branch_name, default_interest_rate, gold_rate, silver_rate, role) VALUES ($1, $2, $3, $4, 1.5, 8000, 100, 'super_admin')`,
           [Date.now().toString(), saUsername, saHash, 'Super Admin']
         );
-        console.log(`Super admin created (username: ${saUsername})`);
+        logger.info({ username: saUsername }, 'Super admin created');
       } else {
-        await db.query(
-          `UPDATE branches SET username = $1, password = $2 WHERE role = 'super_admin'`,
-          [saUsername, saHash]
-        );
-        console.log(`Super admin credentials synced (username: ${saUsername})`);
+        await db.query(`UPDATE branches SET username = $1, password = $2 WHERE role = 'super_admin'`, [saUsername, saHash]);
+        logger.info({ username: saUsername }, 'Super admin credentials synced');
       }
     } else {
-      console.log('SUPER_ADMIN_USERNAME/PASSWORD not set — skipping super admin setup');
+      logger.warn('SUPER_ADMIN_USERNAME/PASSWORD not set — skipping super admin setup');
     }
 
     const res = await db.query("SELECT count(*) FROM branches WHERE role != 'super_admin'");
@@ -172,35 +185,51 @@ const initDb = async () => {
           `INSERT INTO branches (id, username, password, branch_name, default_interest_rate, gold_rate, silver_rate) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
           [adminId, adminUsername, hash, 'Main Branch', 1.5, 8000, 100]
         );
-        console.log(`Default branch created (username: ${adminUsername})`);
+        logger.info({ username: adminUsername }, 'Default branch created');
         const defaults = [
-          ['1', 'admin', 'CHAIN', 'GOLD'],
-          ['2', 'admin', 'RING', 'GOLD'],
-          ['3', 'admin', 'AARAM', 'GOLD'],
-          ['4', 'admin', 'NECKLES', 'GOLD'],
-          ['5', 'admin', 'BANGLES', 'GOLD'],
-          ['6', 'admin', 'PLATE', 'SILVER'],
-          ['7', 'admin', 'ANKLET', 'SILVER'],
-          ['8', 'admin', 'COIN', 'SILVER']
+          ['1', adminId, 'CHAIN', 'GOLD'], ['2', adminId, 'RING', 'GOLD'],
+          ['3', adminId, 'AARAM', 'GOLD'], ['4', adminId, 'NECKLES', 'GOLD'],
+          ['5', adminId, 'BANGLES', 'GOLD'], ['6', adminId, 'PLATE', 'SILVER'],
+          ['7', adminId, 'ANKLET', 'SILVER'], ['8', adminId, 'COIN', 'SILVER']
         ];
         for (const d of defaults) {
           await db.query(`INSERT INTO ornaments_config (id, branch_id, name, metal_type) VALUES ($1, $2, $3, $4)`, d);
         }
       } else {
-        console.log('ADMIN_USERNAME/PASSWORD not set — skipping default branch setup');
+        logger.warn('ADMIN_USERNAME/PASSWORD not set — skipping default branch setup');
       }
     }
   } catch (err) {
-    console.error('DB Init Error:', err);
+    logger.error({ err: err.message }, 'DB init failed');
   }
 };
 initDb();
 
+// ── Validation helper ─────────────────────────────────────────────────────────
+const validate = (fields, body) => {
+  const missing = fields.filter(f => body[f] === undefined || body[f] === null || body[f] === '');
+  return missing.length ? `Missing required fields: ${missing.join(', ')}` : null;
+};
+
+// ── Audit helper ──────────────────────────────────────────────────────────────
+const audit = async (branchId, userId, action, entityType, entityId, details = {}) => {
+  try {
+    await db.query(
+      `INSERT INTO audit_logs (branch_id, user_id, action, entity_type, entity_id, details) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [branchId || null, userId || null, action, entityType || null, entityId || null, JSON.stringify(details)]
+    );
+  } catch (err) {
+    logger.error({ err: err.message }, 'Audit log error');
+  }
+};
+
 // Routes
 
 // 1. Login
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', loginLimiter, async (req, res) => {
   const { username, password } = req.body;
+  const err = validate(['username', 'password'], req.body);
+  if (err) return res.status(400).json({ error: err });
   try {
     const result = await db.query(`SELECT * FROM branches WHERE username = $1`, [username]);
     const row = result.rows[0];
@@ -221,7 +250,8 @@ app.post('/api/login', async (req, res) => {
       role: row.role || 'branch'
     };
 
-    const token = jwt.sign({ id: row.id }, process.env.JWT_SECRET || 'secret', { expiresIn: '8h' });
+    const token = jwt.sign({ id: row.id }, JWT_SECRET, { expiresIn: '8h' });
+    await audit(row.id, row.id, 'LOGIN', 'branch', row.id, { username: row.username });
     res.json({ ...mappedData, token });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -317,68 +347,230 @@ app.post('/api/upload', upload.single('photo'), async (req, res) => {
     const url = await uploadToCloudinary(req.file.buffer, folder, filename);
     return res.json({ url, storage: 'cloudinary' });
   } catch (err) {
-    console.error('Cloudinary upload failed:', err.message);
+    logger.error({ err: err.message }, 'Cloudinary upload failed');
     return res.status(500).json({ error: 'Upload failed' });
   }
 });
 
-// 3. Get all loans for a specific branch (JOIN with Customers)
-app.get('/api/loans', async (req, res) => {
+// Helper: map a loans DB row to the camelCase API shape
+const mapLoanRow = (row) => ({
+  ...row,
+  branchId: row.branch_id,
+  customerName: row.customer_name,
+  customerPhone: row.customer_phone,
+  customerId: row.guardian_name,
+  loanDate: row.loan_date,
+  loanTime: row.loan_time,
+  ornamentCategory: row.ornament_category,
+  interestRate: row.interest_rate,
+  processingFee: row.processing_fee,
+  paymentMode: row.payment_mode,
+  bankName: row.bank_name,
+  loanAmount: row.loan_amount,
+  amountGiven: row.amount_given,
+  ornaments: row.ornaments,
+  totalInterestPaid: row.total_interest_paid,
+  monthlyInterest: row.monthly_interest,
+  customerPhoto: row.customer_photo,
+  aadharPhoto: row.aadhar_photo,
+  ornamentPhoto: row.ornament_photo,
+  bankLoanNumber: row.bank_loan_number,
+  area: row.area,
+  bankAmount: row.bank_amount,
+  bankSettledAmount: row.bank_settled_amount,
+  nextDueDate: row.next_due_date ? new Date(row.next_due_date).toISOString().split('T')[0] : null,
+  lastPaidDate: row.last_paid_date ? new Date(row.last_paid_date).toLocaleDateString('sv', { timeZone: 'Asia/Kolkata' }) : null,
+  branchName: row.branch_name || null,
+});
+
+// 3a. Aggregate stats for Dashboard (date-range filtered)
+app.get('/api/loans/stats', async (req, res) => {
+  const { branchId, role, from, to } = req.query;
+  const isSuperAdmin = role === 'super_admin';
+  if (!branchId && !isSuperAdmin) return res.status(400).json({ error: 'branchId is required' });
+
+  const fromDate = from || new Date(new Date().setFullYear(new Date().getFullYear() - 1)).toISOString().split('T')[0];
+  const toDate = to || new Date().toISOString().split('T')[0];
+
+  try {
+    const statsParams = isSuperAdmin ? [fromDate, toDate] : [branchId, fromDate, toDate];
+    const branchWhere = isSuperAdmin ? '' : 'AND l.branch_id = $1';
+    const [f, t] = isSuperAdmin ? ['$1', '$2'] : ['$2', '$3'];
+
+    const [statsResult, monthlyResult] = await Promise.all([
+      db.query(`
+        SELECT
+          COUNT(*) as total_loans,
+          COUNT(*) FILTER (WHERE l.status = 'active') as active_count,
+          COUNT(*) FILTER (WHERE l.status = 'closed') as closed_count,
+          COUNT(*) FILTER (WHERE l.status = 'renewed') as renewed_count,
+          COALESCE(SUM(l.amount_given), 0) as total_amount_given,
+          COALESCE(SUM(l.total_interest_paid), 0) as total_interest_paid,
+          COALESCE(SUM(l.bank_amount), 0) as total_bank_amount,
+          COALESCE(SUM(l.bank_settled_amount), 0) as total_bank_settled,
+          COALESCE(SUM(
+            CASE WHEN l.status != 'closed' THEN (
+              SELECT COUNT(*) FROM interest_payments ip WHERE ip.loan_id = l.id AND ip.status != 'paid'
+            ) ELSE 0 END
+          ), 0) as pending_interests
+        FROM loans l
+        WHERE l.loan_date BETWEEN ${f}::date AND ${t}::date ${branchWhere}
+      `, statsParams),
+      isSuperAdmin
+        ? db.query(`SELECT TO_CHAR(loan_date,'YYYY-MM') as month, COUNT(*) as count, COALESCE(SUM(amount_given),0) as total FROM loans GROUP BY month ORDER BY month DESC LIMIT 12`)
+        : db.query(`SELECT TO_CHAR(loan_date,'YYYY-MM') as month, COUNT(*) as count, COALESCE(SUM(amount_given),0) as total FROM loans WHERE branch_id = $1 GROUP BY month ORDER BY month DESC LIMIT 12`, [branchId]),
+    ]);
+
+    const s = statsResult.rows[0];
+    res.json({
+      totalLoans: parseInt(s.total_loans),
+      activeCount: parseInt(s.active_count),
+      closedCount: parseInt(s.closed_count),
+      renewedCount: parseInt(s.renewed_count),
+      totalAmountGiven: parseFloat(s.total_amount_given),
+      totalInterestPaid: parseFloat(s.total_interest_paid),
+      totalBankAmount: parseFloat(s.total_bank_amount),
+      totalBankSettled: parseFloat(s.total_bank_settled),
+      pendingInterests: parseInt(s.pending_interests),
+      monthlySummary: monthlyResult.rows.map(r => ({ month: r.month, count: parseInt(r.count), total: parseFloat(r.total) })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3b. Lightweight summary: overdue loans + total interest for sidebar
+app.get('/api/loans/summary', async (req, res) => {
   const { branchId, role } = req.query;
   const isSuperAdmin = role === 'super_admin';
   if (!branchId && !isSuperAdmin) return res.status(400).json({ error: 'branchId is required' });
 
   try {
-    const result = isSuperAdmin
-      ? await db.query(`
-          SELECT l.*, c.name as customer_name, c.phone as customer_phone, c.address, c.gender, c.photo as customer_photo, c.aadhar_photo,
-          b.branch_name,
+    const [interestResult, activeResult] = await Promise.all([
+      isSuperAdmin
+        ? db.query(`SELECT COALESCE(SUM(total_interest_paid), 0) as total FROM loans`)
+        : db.query(`SELECT COALESCE(SUM(total_interest_paid), 0) as total FROM loans WHERE branch_id = $1`, [branchId]),
+      isSuperAdmin
+        ? db.query(`
+            SELECT l.id, c.name as customer_name, c.phone as customer_phone,
+              l.monthly_interest, l.loan_amount, b.branch_name,
+              (SELECT MAX(ip.due_date) FROM interest_payments ip WHERE ip.loan_id = l.id AND ip.status = 'paid') as last_paid_date
+            FROM loans l
+            LEFT JOIN customers c ON l.guardian_name = c.id
+            LEFT JOIN branches b ON l.branch_id = b.id
+            WHERE l.status = 'active'
+          `)
+        : db.query(`
+            SELECT l.id, c.name as customer_name, c.phone as customer_phone,
+              l.monthly_interest, l.loan_amount,
+              (SELECT MAX(ip.due_date) FROM interest_payments ip WHERE ip.loan_id = l.id AND ip.status = 'paid') as last_paid_date
+            FROM loans l
+            LEFT JOIN customers c ON l.guardian_name = c.id
+            WHERE l.status = 'active' AND l.branch_id = $1
+          `, [branchId]),
+    ]);
+
+    const todayIST = new Date(new Date().toLocaleDateString('sv', { timeZone: 'Asia/Kolkata' }));
+    const overdueLoans = activeResult.rows
+      .map(r => ({
+        id: r.id,
+        customerName: r.customer_name,
+        customerPhone: r.customer_phone,
+        monthlyInterest: parseFloat(r.monthly_interest) || 0,
+        loanAmount: parseFloat(r.loan_amount) || 0,
+        branchName: r.branch_name || null,
+        lastPaidDate: r.last_paid_date ? new Date(r.last_paid_date).toLocaleDateString('sv', { timeZone: 'Asia/Kolkata' }) : null,
+      }))
+      .filter(l => {
+        if (!l.lastPaidDate) return false;
+        const nextDue = new Date(l.lastPaidDate);
+        nextDue.setMonth(nextDue.getMonth() + 1);
+        return nextDue < todayIST;
+      });
+
+    res.json({ totalInterestPaid: parseFloat(interestResult.rows[0].total), overdueLoans });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3c. Export all loans in a date range (for CSV download, no pagination)
+app.get('/api/loans/export', async (req, res) => {
+  const { branchId, role, from, to, branchFilter } = req.query;
+  const isSuperAdmin = role === 'super_admin';
+  if (!branchId && !isSuperAdmin) return res.status(400).json({ error: 'branchId is required' });
+
+  try {
+    const conditions = [];
+    const params = [];
+    if (!isSuperAdmin) { params.push(branchId); conditions.push(`l.branch_id = $${params.length}`); }
+    if (from) { params.push(from); conditions.push(`l.loan_date >= $${params.length}::date`); }
+    if (to) { params.push(to); conditions.push(`l.loan_date <= $${params.length}::date`); }
+    if (isSuperAdmin && branchFilter && branchFilter !== 'all') { params.push(branchFilter); conditions.push(`b.branch_name = $${params.length}`); }
+
+    const result = await db.query(`
+      SELECT l.*, c.name as customer_name, c.phone as customer_phone, b.branch_name
+      FROM loans l
+      LEFT JOIN customers c ON l.guardian_name = c.id
+      LEFT JOIN branches b ON l.branch_id = b.id
+      ${conditions.length ? 'WHERE ' + conditions.join(' AND ') : ''}
+      ORDER BY l.loan_date DESC
+    `, params);
+
+    res.json(result.rows.map(mapLoanRow));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. Get loans (paginated) — page/limit/search/status/branchFilter supported
+app.get('/api/loans', async (req, res) => {
+  const { branchId, role, page = '1', limit = '25', search, status, branchFilter } = req.query;
+  const isSuperAdmin = role === 'super_admin';
+  if (!branchId && !isSuperAdmin) return res.status(400).json({ error: 'branchId is required' });
+
+  const pageNum = Math.max(1, parseInt(page) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 25));
+  const offset = (pageNum - 1) * limitNum;
+
+  try {
+    const conditions = [];
+    const params = [];
+
+    if (!isSuperAdmin) { params.push(branchId); conditions.push(`l.branch_id = $${params.length}`); }
+    if (search) {
+      params.push(`%${search}%`);
+      const idx = params.length;
+      conditions.push(`(c.name ILIKE $${idx} OR l.id ILIKE $${idx} OR c.phone ILIKE $${idx} OR l.bank_loan_number ILIKE $${idx})`);
+    }
+    if (status && status !== 'all') { params.push(status); conditions.push(`l.status = $${params.length}`); }
+    if (isSuperAdmin && branchFilter && branchFilter !== 'all') { params.push(branchFilter); conditions.push(`b.branch_name = $${params.length}`); }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const joins = `LEFT JOIN customers c ON l.guardian_name = c.id LEFT JOIN branches b ON l.branch_id = b.id`;
+
+    const [countResult, dataResult] = await Promise.all([
+      db.query(`SELECT COUNT(*) FROM loans l ${joins} ${where}`, params),
+      db.query(`
+        SELECT l.*, c.name as customer_name, c.phone as customer_phone, c.address, c.gender,
+          c.photo as customer_photo, c.aadhar_photo, b.branch_name,
           (SELECT COUNT(*) FROM interest_payments ip WHERE ip.loan_id = l.id AND ip.status != 'paid') as pending_count,
-          (SELECT MIN(ip2.due_date) FROM interest_payments ip2 WHERE ip2.loan_id = l.id AND ip2.status != 'paid') as next_due_date
-          FROM loans l
-          LEFT JOIN customers c ON l.guardian_name = c.id
-          LEFT JOIN branches b ON l.branch_id = b.id
-          ORDER BY l.created_at DESC
-        `)
-      : await db.query(`
-          SELECT l.*, c.name as customer_name, c.phone as customer_phone, c.address, c.gender, c.photo as customer_photo, c.aadhar_photo,
-          (SELECT COUNT(*) FROM interest_payments ip WHERE ip.loan_id = l.id AND ip.status != 'paid') as pending_count,
-          (SELECT MIN(ip2.due_date) FROM interest_payments ip2 WHERE ip2.loan_id = l.id AND ip2.status != 'paid') as next_due_date
-          FROM loans l
-          LEFT JOIN customers c ON l.guardian_name = c.id
-          WHERE l.branch_id = $1
-          ORDER BY l.created_at DESC
-        `, [branchId]);
-    
-    const loans = result.rows.map(row => ({
-      ...row,
-      branchId: row.branch_id,
-      customerName: row.customer_name,
-      customerPhone: row.customer_phone,
-      customerId: row.guardian_name, 
-      loanDate: row.loan_date,
-      loanTime: row.loan_time,
-      ornamentCategory: row.ornament_category,
-      interestRate: row.interest_rate,
-      processingFee: row.processing_fee,
-      paymentMode: row.payment_mode,
-      bankName: row.bank_name,
-      loanAmount: row.loan_amount,
-      amountGiven: row.amount_given,
-      ornaments: row.ornaments,
-      totalInterestPaid: row.total_interest_paid,
-      monthlyInterest: row.monthly_interest,
-      customerPhoto: row.customer_photo,
-      aadharPhoto: row.aadhar_photo,
-      ornamentPhoto: row.ornament_photo,
-      bankLoanNumber: row.bank_loan_number,
-      area: row.area,
-      bankAmount: row.bank_amount,
-      bankSettledAmount: row.bank_settled_amount,
-      nextDueDate: row.next_due_date ? new Date(row.next_due_date).toISOString().split('T')[0] : null,
-      branchName: row.branch_name || null
-    }));
-    res.json(loans);
+          (SELECT MIN(ip2.due_date) FROM interest_payments ip2 WHERE ip2.loan_id = l.id AND ip2.status != 'paid') as next_due_date,
+          (SELECT MAX(ip3.due_date) FROM interest_payments ip3 WHERE ip3.loan_id = l.id AND ip3.status = 'paid') as last_paid_date
+        FROM loans l ${joins} ${where}
+        ORDER BY l.created_at DESC
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      `, [...params, limitNum, offset]),
+    ]);
+
+    const total = parseInt(countResult.rows[0].count);
+    res.json({
+      loans: dataResult.rows.map(mapLoanRow),
+      total,
+      page: pageNum,
+      totalPages: Math.max(1, Math.ceil(total / limitNum)),
+      limit: limitNum,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -443,7 +635,27 @@ app.get('/api/next-loan-number', async (req, res) => {
   }
 });
 
-// 3.3 Get interest payments for a loan
+// 3.3 Get a single loan by ID
+app.get('/api/loans/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await db.query(`
+      SELECT l.*, c.name as customer_name, c.phone as customer_phone, c.address, c.gender,
+        c.photo as customer_photo, c.aadhar_photo, b.branch_name,
+        (SELECT MAX(ip.due_date) FROM interest_payments ip WHERE ip.loan_id = l.id AND ip.status = 'paid') as last_paid_date
+      FROM loans l
+      LEFT JOIN customers c ON l.guardian_name = c.id
+      LEFT JOIN branches b ON l.branch_id = b.id
+      WHERE l.id = $1
+    `, [id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'Loan not found' });
+    res.json(mapLoanRow(result.rows[0]));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3.4 Get interest payments for a loan
 app.get('/api/loans/:id/interests', async (req, res) => {
   const { id } = req.params;
   try {
@@ -460,7 +672,9 @@ app.get('/api/loans/:id/interests', async (req, res) => {
 // 3.4 Record a new interest payment
 app.post('/api/interests/record', async (req, res) => {
   const { loanId, dueDate, amount, paidAmount, paymentMode, paymentDate } = req.body;
-  if (!loanId || !dueDate || !amount) return res.status(400).json({ error: 'loanId, dueDate and amount are required' });
+  const err = validate(['loanId', 'dueDate', 'amount'], req.body);
+  if (err) return res.status(400).json({ error: err });
+  if (parseFloat(amount) <= 0) return res.status(400).json({ error: 'amount must be greater than 0' });
   const due = parseFloat(amount);
   const paid = parseFloat(paidAmount ?? amount); // paidAmount can be less than amount (partial)
   const carryForward = Math.max(0, due - paid);
@@ -473,6 +687,7 @@ app.post('/api/interests/record', async (req, res) => {
 
     await db.query(`UPDATE loans SET total_interest_paid = total_interest_paid + $1 WHERE id = $2`, [paid, loanId]);
 
+    await audit(null, null, 'INTEREST_PAYMENT', 'loan', loanId, { amount: paid, dueDate, paymentMode: paymentMode || 'CASH' });
     res.json({ message: 'Payment recorded successfully', carryForward, status });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -505,7 +720,10 @@ app.post('/api/interests/:id/pay', async (req, res) => {
 // 4. Create a new loan
 app.post('/api/loans', async (req, res) => {
   const loan = req.body;
-  if (!loan.branchId) return res.status(400).json({ error: 'branchId is required' });
+  const err = validate(['branchId', 'customerName', 'customerPhone', 'loanAmount', 'interestRate'], loan);
+  if (err) return res.status(400).json({ error: err });
+  if (parseFloat(loan.loanAmount) <= 0) return res.status(400).json({ error: 'loanAmount must be greater than 0' });
+  if (parseFloat(loan.interestRate) < 0) return res.status(400).json({ error: 'interestRate cannot be negative' });
 
   try {
     // 1. Manage Customer
@@ -581,6 +799,7 @@ app.post('/api/loans', async (req, res) => {
 
     // (The total_interest_paid is already set in the INSERT statement above)
 
+    await audit(loan.branchId, loan.branchId, 'LOAN_CREATE', 'loan', finalLoanId, { customerName: loan.customerName, loanAmount: loan.loanAmount });
     res.status(201).json({ id: finalLoanId, customerId: actualCustomerId, loanNumber, message: 'Loan created and initial interest recorded' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -590,7 +809,9 @@ app.post('/api/loans', async (req, res) => {
 app.put('/api/loans/:id', async (req, res) => {
   const { id } = req.params;
   const loan = req.body;
-  
+  const err = validate(['loanAmount', 'interestRate', 'status'], loan);
+  if (err) return res.status(400).json({ error: err });
+
   try {
     // 1. Update Customer Details in Customers table
     if (loan.customerId) {
@@ -641,6 +862,7 @@ app.put('/api/loans/:id', async (req, res) => {
       await db.query(`DELETE FROM interest_payments WHERE loan_id = $1 AND status = 'pending'`, [id]);
     }
 
+    await audit(loan.branchId, loan.branchId, 'LOAN_UPDATE', 'loan', id, { status: loan.status, loanAmount: loan.loanAmount });
     res.json({ message: 'Loan and customer details updated successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -650,7 +872,10 @@ app.put('/api/loans/:id', async (req, res) => {
 // 4.2 Delete a loan
 app.delete('/api/loans/:id', async (req, res) => {
   try {
+    const loanRow = await db.query('SELECT branch_id FROM loans WHERE id = $1', [req.params.id]);
+    const branchId = loanRow.rows[0]?.branch_id;
     await db.query('DELETE FROM loans WHERE id = $1', [req.params.id]);
+    await audit(branchId, branchId, 'LOAN_DELETE', 'loan', req.params.id, {});
     res.json({ message: 'Loan deleted successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -660,7 +885,10 @@ app.delete('/api/loans/:id', async (req, res) => {
 // Loan Renewal — closes old loan, creates a fresh loan with renewed status
 app.post('/api/loans/:id/renew', async (req, res) => {
   const { renewalDate, loanAmount, interestRate } = req.body;
-  if (!loanAmount || !interestRate) return res.status(400).json({ error: 'loanAmount and interestRate are required' });
+  const err = validate(['loanAmount', 'interestRate'], req.body);
+  if (err) return res.status(400).json({ error: err });
+  if (parseFloat(loanAmount) <= 0) return res.status(400).json({ error: 'loanAmount must be greater than 0' });
+  if (parseFloat(interestRate) < 0) return res.status(400).json({ error: 'interestRate cannot be negative' });
   const date = renewalDate || new Date().toISOString().split('T')[0];
   try {
     // 1. Fetch old loan
@@ -710,6 +938,7 @@ app.post('/api/loans/:id/renew', async (req, res) => {
       `, [newId, date, newMonthly, old.payment_mode || 'CASH']);
     }
 
+    await audit(old.branch_id, old.branch_id, 'LOAN_RENEW', 'loan', req.params.id, { newLoanId: newId, loanAmount: newLoanAmount });
     res.json({ success: true, newLoanId: newId, loanNumber });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -735,6 +964,7 @@ app.post('/api/loans/:id/part-payment', async (req, res) => {
       `INSERT INTO part_payments (id, loan_id, amount, payment_date, payment_mode, balance_after, is_foreclosure) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [Date.now().toString(), req.params.id, parseFloat(amount), paymentDate || new Date().toISOString().split('T')[0], paymentMode || 'CASH', newLoanAmount, isForeclosure]
     );
+    await audit(null, null, 'PART_PAYMENT', 'loan', req.params.id, { amount: parseFloat(amount), balanceAfter: newLoanAmount, isForeclosure });
     res.json({ success: true, loanAmount: newLoanAmount, amountGiven: parseFloat(row.amount_given), monthlyInterest: newMonthlyInterest, status });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -767,6 +997,8 @@ app.get('/api/settings/ornaments', async (req, res) => {
 
 app.post('/api/settings/ornaments', async (req, res) => {
   const { branchId, name, metalType } = req.body;
+  const err = validate(['branchId', 'name', 'metalType'], req.body);
+  if (err) return res.status(400).json({ error: err });
   const id = Date.now().toString();
   try {
     await db.query(
@@ -846,6 +1078,8 @@ app.get('/api/settings/branch/:id', async (req, res) => {
 
 app.put('/api/settings/branch/:id', async (req, res) => {
   const { goldRate, silverRate, defaultInterestRate, storagePath } = req.body;
+  const err = validate(['goldRate', 'silverRate', 'defaultInterestRate'], req.body);
+  if (err) return res.status(400).json({ error: err });
   try {
     await db.query(
       `UPDATE branches SET gold_rate = $1, silver_rate = $2, default_interest_rate = $3, storage_path = $4 WHERE id = $5`,
@@ -881,7 +1115,80 @@ app.get('/api/fs/dirs', (req, res) => {
   }
 });
 
-app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
+// Report exports — interest payments
+app.get('/api/reports/interest-payments', async (req, res) => {
+  const { branchId, role, from, to } = req.query;
+  const isSuperAdmin = role === 'super_admin';
+  if (!branchId && !isSuperAdmin) return res.status(400).json({ error: 'branchId required' });
+  try {
+    const params = isSuperAdmin
+      ? [from || '2000-01-01', to || '2099-12-31']
+      : [branchId, from || '2000-01-01', to || '2099-12-31'];
+    const branchFilter = isSuperAdmin ? '' : 'AND l.branch_id = $1';
+    const idx = isSuperAdmin ? 1 : 2;
+    const result = await db.query(`
+      SELECT ip.id, ip.loan_id, ip.due_date, ip.amount, ip.paid_amount, ip.payment_date, ip.payment_mode, ip.carry_forward,
+             c.name as customer_name, c.phone as customer_phone,
+             b.branch_name
+      FROM interest_payments ip
+      JOIN loans l ON ip.loan_id = l.id
+      LEFT JOIN customers c ON l.guardian_name = c.id
+      LEFT JOIN branches b ON l.branch_id = b.id
+      WHERE ip.status = 'paid' ${branchFilter}
+        AND ip.payment_date BETWEEN $${idx} AND $${idx + 1}
+      ORDER BY ip.payment_date DESC, ip.loan_id
+    `, params);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Report exports — part payments
+app.get('/api/reports/part-payments', async (req, res) => {
+  const { branchId, role, from, to } = req.query;
+  const isSuperAdmin = role === 'super_admin';
+  if (!branchId && !isSuperAdmin) return res.status(400).json({ error: 'branchId required' });
+  try {
+    const params = isSuperAdmin
+      ? [from || '2000-01-01', to || '2099-12-31']
+      : [branchId, from || '2000-01-01', to || '2099-12-31'];
+    const branchFilter = isSuperAdmin ? '' : 'AND l.branch_id = $1';
+    const idx = isSuperAdmin ? 1 : 2;
+    const result = await db.query(`
+      SELECT pp.id, pp.loan_id, pp.amount, pp.payment_date, pp.payment_mode, pp.balance_after, pp.is_foreclosure,
+             c.name as customer_name, c.phone as customer_phone,
+             b.branch_name
+      FROM part_payments pp
+      JOIN loans l ON pp.loan_id = l.id
+      LEFT JOIN customers c ON l.guardian_name = c.id
+      LEFT JOIN branches b ON l.branch_id = b.id
+      WHERE 1=1 ${branchFilter}
+        AND pp.payment_date BETWEEN $${idx} AND $${idx + 1}
+      ORDER BY pp.payment_date DESC, pp.loan_id
+    `, params);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Audit logs
+app.get('/api/audit-logs', async (req, res) => {
+  const { branchId, role, limit = 100 } = req.query;
+  try {
+    const result = role === 'super_admin'
+      ? await db.query(`SELECT a.*, b.branch_name FROM audit_logs a LEFT JOIN branches b ON a.branch_id = b.id ORDER BY a.created_at DESC LIMIT $1`, [parseInt(limit)])
+      : await db.query(`SELECT a.*, b.branch_name FROM audit_logs a LEFT JOIN branches b ON a.branch_id = b.id WHERE a.branch_id = $1 ORDER BY a.created_at DESC LIMIT $2`, [branchId, parseInt(limit)]);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/health', async (_req, res) => {
+  try {
+    await db.query('SELECT 1');
+    res.json({ status: 'ok', db: 'connected', ts: new Date().toISOString() });
+  } catch (err) {
+    logger.error({ err: err.message }, 'Health check DB ping failed');
+    res.status(503).json({ status: 'error', db: 'unreachable' });
+  }
+});
 
 // 404 for unmatched API routes
 app.use('/api', (_req, res) => {
@@ -890,8 +1197,8 @@ app.use('/api', (_req, res) => {
 
 // Global error handler — catches any unhandled errors from async routes
 app.use((err, _req, res, _next) => {
-  console.error('Unhandled error:', err.message);
+  logger.error({ err: err.message, stack: err.stack }, 'Unhandled error');
   res.status(500).json({ error: 'Internal server error' });
 });
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => logger.info({ port: PORT }, 'Server running'));

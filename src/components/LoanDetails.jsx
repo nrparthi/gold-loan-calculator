@@ -1,6 +1,13 @@
 import { useState, useEffect } from 'react';
-import axios from 'axios';
-import { Camera, Upload, Edit2, Save, X, Plus, Trash2, FileText, Clock, Zap, CheckCircle, Download, RefreshCw, Scissors, Printer } from 'lucide-react';
+import api, { getErrorMessage } from '../api';
+import { useToastContext } from './Toast';
+import { Camera, Upload, Edit2, Save, X, Plus, Trash2, FileText, CheckCircle, RefreshCw, Scissors, Printer } from 'lucide-react';
+import InterestLedger from './LoanDetails/InterestLedger';
+import PartPaymentHistory from './LoanDetails/PartPaymentHistory';
+import PayInterestModal from './LoanDetails/PayInterestModal';
+import CloseLoanModal from './LoanDetails/CloseLoanModal';
+import RenewLoanModal from './LoanDetails/RenewLoanModal';
+import PartPaymentModal from './LoanDetails/PartPaymentModal';
 
 const InterestReceipt = ({ receipt, loan, onClose }) => {
   if (!receipt) return null;
@@ -54,7 +61,8 @@ const InterestReceipt = ({ receipt, loan, onClose }) => {
 };
 
 
-const LoanDetails = ({ loan, onUpdateLoan, onRenewLoan }) => {
+const LoanDetails = ({ loan, onUpdateLoan, onRenewLoan, autoPayInterest = false }) => {
+  const { showError, showSuccess } = useToastContext();
   const [isEditing, setIsEditing] = useState(false);
   const [formData, setFormData] = useState(loan);
   const [ornaments, setOrnaments] = useState(loan.ornaments || []);
@@ -72,13 +80,21 @@ const LoanDetails = ({ loan, onUpdateLoan, onRenewLoan }) => {
 
   useEffect(() => {
     if (!loan.id) return;
-    const apiUrl = import.meta.env.VITE_API_URL;
-    axios.get(`${apiUrl}/loans/${loan.id}/interests`)
-      .then(r => setMonthlyInterests(r.data))
-      .catch(err => console.error('Error fetching interests:', err));
-    axios.get(`${apiUrl}/loans/${loan.id}/part-payments`)
-      .then(r => setPartPayments(r.data))
-      .catch(() => {});
+    Promise.all([
+      api.get(`/loans/${loan.id}/interests`),
+      api.get(`/loans/${loan.id}/part-payments`),
+    ]).then(([interestsRes, partPayRes]) => {
+      setMonthlyInterests(interestsRes.data);
+      setPartPayments(partPayRes.data);
+      if (autoPayInterest) {
+        const sorted = [...interestsRes.data].filter(i => i.status === 'paid').sort((a, b) => new Date(a.due_date) - new Date(b.due_date));
+        const lastDate = sorted.length > 0 ? new Date(sorted[sorted.length - 1].due_date) : new Date(loan.loanDate || new Date());
+        const nextDate = new Date(lastDate);
+        nextDate.setMonth(nextDate.getMonth() + 1);
+        setPaymentForm(f => ({ ...f, amount: loan.monthlyInterest || 0, dueDate: nextDate.toISOString().split('T')[0] }));
+        setShowPayInterest(true);
+      }
+    }).catch(err => showError(getErrorMessage(err)));
   }, [loan.id]);
 
   const handleInputChange = (e) => {
@@ -88,17 +104,18 @@ const LoanDetails = ({ loan, onUpdateLoan, onRenewLoan }) => {
 
   const handleOrnamentChange = (index, field, value) => {
     const updated = [...ornaments];
-    updated[index][field] = field === 'quantity' || field === 'grossWt' || field === 'netWt' || field === 'ratePerGram'
+    updated[index][field] = ['quantity', 'grossWt', 'netWt', 'ratePerGram', 'purity'].includes(field)
       ? parseFloat(value) || 0
       : value;
-    if (['netWt', 'ratePerGram'].includes(field)) {
-      updated[index].value = updated[index].netWt * updated[index].ratePerGram;
+    if (['netWt', 'ratePerGram', 'purity'].includes(field)) {
+      const purity = updated[index].purity || 1000;
+      updated[index].value = updated[index].netWt * updated[index].ratePerGram * (purity / 1000);
     }
     setOrnaments(updated);
   };
 
   const addOrnament = () => {
-    setOrnaments([...ornaments, { type: 'CHAIN', specification: '', quantity: 1, grossWt: 0, netWt: 0, ratePerGram: 8000, value: 0 }]);
+    setOrnaments([...ornaments, { type: 'CHAIN', specification: '', quantity: 1, grossWt: 0, netWt: 0, ratePerGram: 8000, purity: 916, value: 0 }]);
   };
 
   const removeOrnament = (index) => {
@@ -117,9 +134,7 @@ const LoanDetails = ({ loan, onUpdateLoan, onRenewLoan }) => {
 
   const submitPayment = async () => {
     try {
-      const apiUrl = import.meta.env.VITE_API_URL;
-      
-      await axios.post(`${apiUrl}/interests/record`, {
+      await api.post(`/interests/record`, {
         loanId: loan.id,
         dueDate: paymentForm.dueDate,
         amount: paymentForm.amount,
@@ -143,9 +158,9 @@ const LoanDetails = ({ loan, onUpdateLoan, onRenewLoan }) => {
       onUpdateLoan({ ...loan, totalInterestPaid: (parseFloat(loan.totalInterestPaid) || 0) + parseFloat(paymentForm.amount) });
       setShowPayInterest(false);
       setReceiptData({ amount: paymentForm.amount, dueDate: paymentForm.dueDate, paidDate: paymentForm.paidDate, paymentMode: paymentForm.paymentMode });
+      showSuccess('Interest payment recorded');
     } catch (err) {
-      console.error('Error paying interest:', err);
-      alert('Failed to record payment');
+      showError(getErrorMessage(err));
     }
   };
 
@@ -157,31 +172,29 @@ const LoanDetails = ({ loan, onUpdateLoan, onRenewLoan }) => {
   const submitRenew = async () => {
     const newLoanAmount = parseFloat(renewForm.loanAmount);
     const newInterestRate = parseFloat(renewForm.interestRate);
-    if (!newLoanAmount || newLoanAmount <= 0) { alert('Enter a valid loan amount'); return; }
-    if (!newInterestRate || newInterestRate <= 0) { alert('Enter a valid interest rate'); return; }
+    if (!newLoanAmount || newLoanAmount <= 0) { showError('Enter a valid loan amount'); return; }
+    if (!newInterestRate || newInterestRate <= 0) { showError('Enter a valid interest rate'); return; }
     try {
-      const apiUrl = import.meta.env.VITE_API_URL;
-      const res = await axios.post(`${apiUrl}/loans/${loan.id}/renew`, {
+      const res = await api.post(`/loans/${loan.id}/renew`, {
         renewalDate: renewForm.renewalDate,
         loanAmount: newLoanAmount,
         interestRate: newInterestRate
       });
       setShowRenew(false);
+      showSuccess('Loan renewed successfully');
       if (onRenewLoan) onRenewLoan(res.data.newLoanId);
     } catch (err) {
-      console.error('Renewal error:', err);
-      alert('Failed to renew loan');
+      showError(getErrorMessage(err));
     }
   };
 
   const submitPartPayment = async () => {
     const amount = parseFloat(partPayForm.amount);
-    if (!amount || amount <= 0) { alert('Enter a valid amount'); return; }
+    if (!amount || amount <= 0) { showError('Enter a valid amount'); return; }
     const currentLoanAmount = parseFloat(loan.loanAmount) || 0;
-    if (amount > currentLoanAmount) { alert('Amount cannot exceed current loan balance'); return; }
+    if (amount > currentLoanAmount) { showError('Amount cannot exceed current loan balance'); return; }
     try {
-      const apiUrl = import.meta.env.VITE_API_URL;
-      const res = await axios.post(`${apiUrl}/loans/${loan.id}/part-payment`, {
+      const res = await api.post(`/loans/${loan.id}/part-payment`, {
         amount,
         paymentDate: partPayForm.paymentDate,
         paymentMode: partPayForm.paymentMode,
@@ -200,9 +213,9 @@ const LoanDetails = ({ loan, onUpdateLoan, onRenewLoan }) => {
       }]);
       setShowPartPayment(false);
       setPartPayForm({ amount: '', paymentDate: new Date().toISOString().split('T')[0], paymentMode: 'CASH', isFull: false });
+      showSuccess('Part payment recorded');
     } catch (err) {
-      console.error('Part payment error:', err);
-      alert('Failed to record payment');
+      showError(getErrorMessage(err));
     }
   };
 
@@ -218,7 +231,6 @@ const LoanDetails = ({ loan, onUpdateLoan, onRenewLoan }) => {
     }
 
     try {
-      const apiUrl = import.meta.env.VITE_API_URL;
       const photoTypeMap = { customerPhoto: 'customer', aadharPhoto: 'aadhar', ornamentPhoto: 'ornament' };
       const params = new URLSearchParams({
         customerId: loan.customerId || loan.guardianName || 'unknown',
@@ -228,7 +240,7 @@ const LoanDetails = ({ loan, onUpdateLoan, onRenewLoan }) => {
       });
       const fd = new FormData();
       fd.append('photo', file);
-      const res = await axios.post(`${apiUrl}/upload?${params}`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      const res = await api.post(`/upload?${params}`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
       if (index !== null) {
         setOrnaments(prev => { const u = [...prev]; u[index] = { ...u[index], photo: res.data.url }; return u; });
       } else {
@@ -551,6 +563,15 @@ const LoanDetails = ({ loan, onUpdateLoan, onRenewLoan }) => {
                 disabled={!isEditing}
                 className="flex-1 px-3 py-2 bg-slate-600/50 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 disabled:opacity-60 disabled:cursor-not-allowed"
               />
+              <input
+                type="number"
+                placeholder="Purity"
+                value={ornament.purity ?? 916}
+                onChange={(e) => handleOrnamentChange(index, 'purity', e.target.value)}
+                disabled={!isEditing}
+                title="Purity (e.g. 916 for 22k, 750 for 18k)"
+                className="flex-1 px-3 py-2 bg-slate-600/50 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 disabled:opacity-60 disabled:cursor-not-allowed"
+              />
               <span className="font-bold bg-gradient-to-r from-orange-500 to-red-500 bg-clip-text text-transparent text-lg lg:min-w-fit">₹{ornament.value.toLocaleString()}</span>
 
               {isEditing && (
@@ -699,132 +720,14 @@ const LoanDetails = ({ loan, onUpdateLoan, onRenewLoan }) => {
         </div>
       </div>
 
-      {/* Interest Section */}
-      <div className="bg-slate-800/50 backdrop-blur-xl rounded-2xl border border-white/10 p-6 lg:p-8 shadow-2xl">
-        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 mb-8">
-          <div>
-            <h2 className="text-3xl font-black text-white flex items-center gap-3 tracking-tight">
-              <Clock className="text-blue-400" />
-              Interest Ledger
-            </h2>
-            <p className="text-slate-400 font-medium text-sm mt-1">History of interest payments for this loan</p>
-          </div>
-          {nextInterest && (
-            <button
-              onClick={() => handlePayInterest(nextInterest)}
-              className="w-full lg:w-auto px-8 py-3.5 bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-700 hover:via-indigo-700 hover:to-purple-700 text-white rounded-2xl font-black tracking-widest uppercase transition-all duration-500 shadow-[0_10px_30px_rgba(79,70,229,0.3)] hover:shadow-[0_15px_40px_rgba(79,70,229,0.4)] active:scale-95 flex items-center justify-center gap-3 animate-shimmer"
-            >
-              <Zap size={20} className="fill-white" />
-              Pay Interest for {new Date(nextInterest.due_date).toLocaleDateString('en-GB', { month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })}
-            </button>
-          )}
-        </div>
+      <InterestLedger
+        interests={filteredInterests}
+        nextInterest={nextInterest}
+        onPayInterest={handlePayInterest}
+        onPrintReceipt={handlePrintInterestReceipt}
+      />
 
-        {filteredInterests.length > 0 ? (
-          <div className="overflow-x-auto rounded-2xl border border-white/5">
-            <table className="w-full">
-              <thead className="bg-slate-900/50 text-slate-400 text-left">
-                <tr>
-                  <th className="px-8 py-5 text-[10px] font-black uppercase tracking-[0.2em]">Interest Date</th>
-                  <th className="px-8 py-5 text-[10px] font-black uppercase tracking-[0.2em]">Amount</th>
-                  <th className="px-8 py-5 text-[10px] font-black uppercase tracking-[0.2em]">Status</th>
-                  <th className="px-8 py-5 text-[10px] font-black uppercase tracking-[0.2em]">Payment Details</th>
-                  <th className="px-8 py-5 text-right text-[10px] font-black uppercase tracking-[0.2em]">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/5">
-                {filteredInterests.map((interest) => (
-                  <tr key={interest.id} className="hover:bg-white/[0.02] transition-colors group">
-                    <td className="px-8 py-6 font-bold text-white">
-                      {new Date(interest.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })}
-                    </td>
-                    <td className="px-8 py-6">
-                      <span className="text-xl font-black text-emerald-400">₹{(parseFloat(interest.amount) || 0).toLocaleString()}</span>
-                    </td>
-                    <td className="px-8 py-6">
-                      <div className="flex items-center gap-2 text-emerald-400 bg-emerald-500/10 w-fit px-3 py-1 rounded-full border border-emerald-500/20">
-                        <CheckCircle size={12} />
-                        <span className="text-[10px] font-black uppercase tracking-tighter">Paid</span>
-                      </div>
-                    </td>
-                    <td className="px-8 py-6">
-                      <div className="text-xs font-bold text-slate-300">
-                        {interest.payment_date ? new Date(interest.payment_date).toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata' }) : '—'}
-                      </div>
-                      <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest mt-1">
-                        Mode: {interest.payment_mode || 'CASH'}
-                      </div>
-                    </td>
-                    <td className="px-8 py-6 text-right">
-                      <button
-                        onClick={() => handlePrintInterestReceipt(interest)}
-                        className="p-3 bg-white/5 hover:bg-blue-600 text-slate-400 hover:text-white rounded-xl transition-all border border-white/10 hover:border-blue-400 group/print"
-                        title="Print Receipt"
-                      >
-                        <Download size={18} className="group-hover/print:scale-110 transition-transform" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="text-center py-24 bg-slate-900/30 rounded-3xl border border-white/10 border-dashed">
-            <div className="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center mx-auto mb-6">
-              <Clock className="text-slate-600" size={32} />
-            </div>
-            <p className="text-slate-500 font-black uppercase tracking-widest text-xs">No payment history found</p>
-          </div>
-        )}
-      </div>
-
-      {/* Part Payment History */}
-      {partPayments.length > 0 && (
-        <div className="bg-slate-800/50 backdrop-blur-xl rounded-2xl border border-amber-500/20 p-6 lg:p-8 shadow-xl">
-          <h2 className="text-2xl font-black text-white flex items-center gap-3 mb-6">
-            <Scissors className="text-amber-400" size={24} />
-            Principal Payment History
-          </h2>
-          <div className="overflow-x-auto rounded-2xl border border-white/5">
-            <table className="w-full">
-              <thead className="bg-slate-900/50 text-slate-400 text-left">
-                <tr>
-                  <th className="px-6 py-4 text-[10px] font-black uppercase tracking-[0.2em]">#</th>
-                  <th className="px-6 py-4 text-[10px] font-black uppercase tracking-[0.2em]">Payment Date</th>
-                  <th className="px-6 py-4 text-[10px] font-black uppercase tracking-[0.2em]">Amount Paid</th>
-                  <th className="px-6 py-4 text-[10px] font-black uppercase tracking-[0.2em]">Balance After</th>
-                  <th className="px-6 py-4 text-[10px] font-black uppercase tracking-[0.2em]">Mode</th>
-                  <th className="px-6 py-4 text-[10px] font-black uppercase tracking-[0.2em]">Type</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/5">
-                {partPayments.map((p, i) => (
-                  <tr key={p.id} className="hover:bg-white/[0.02] transition-colors">
-                    <td className="px-6 py-5 text-slate-500 font-bold text-sm">{i + 1}</td>
-                    <td className="px-6 py-5 text-white font-bold">
-                      {p.payment_date ? new Date(p.payment_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : '—'}
-                    </td>
-                    <td className="px-6 py-5">
-                      <span className="text-lg font-black text-amber-400">₹{(parseFloat(p.amount) || 0).toLocaleString()}</span>
-                    </td>
-                    <td className="px-6 py-5 font-bold text-slate-300">
-                      ₹{(parseFloat(p.balance_after) || 0).toLocaleString()}
-                    </td>
-                    <td className="px-6 py-5 text-slate-400 font-bold text-sm uppercase">{p.payment_mode || 'CASH'}</td>
-                    <td className="px-6 py-5">
-                      {p.is_foreclosure
-                        ? <span className="px-2 py-1 bg-red-500/10 text-red-400 border border-red-500/20 rounded-full text-[10px] font-black uppercase tracking-wider">Foreclosure</span>
-                        : <span className="px-2 py-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-full text-[10px] font-black uppercase tracking-wider">Part Payment</span>
-                      }
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+      <PartPaymentHistory partPayments={partPayments} />
 
 
       {/* Loan Amount Summary */}
@@ -910,163 +813,40 @@ const LoanDetails = ({ loan, onUpdateLoan, onRenewLoan }) => {
           )}
         </div>
 
-      {/* Pay Interest Modal */}
       {showPayInterest && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-800 rounded-2xl border border-white/10 p-6 max-w-md w-full space-y-4">
-            <h3 className="text-2xl font-bold text-white">Pay Interest</h3>
-            <div>
-              <label className="block text-sm font-semibold text-slate-300 mb-2">Amount</label>
-              <input type="number" value={paymentForm.amount} readOnly className="w-full px-4 py-2.5 bg-slate-700/50 border border-white/10 rounded-lg text-white" />
-            </div>
-            <div>
-              <label className="block text-sm font-semibold text-slate-300 mb-2">Paid On</label>
-              <input type="date" value={paymentForm.paidDate} onChange={(e) => setPaymentForm({ ...paymentForm, paidDate: e.target.value })} className="w-full px-4 py-2.5 bg-slate-700/50 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-            </div>
-            <div>
-              <label className="block text-sm font-semibold text-slate-300 mb-2">Payment Mode</label>
-              <select value={paymentForm.paymentMode} onChange={(e) => setPaymentForm({ ...paymentForm, paymentMode: e.target.value })} className="w-full px-4 py-2.5 bg-slate-700/50 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="CASH">CASH</option>
-                <option value="UPI">UPI</option>
-                <option value="BANK">BANK</option>
-              </select>
-            </div>
-            <div className="flex gap-3 pt-4">
-              <button onClick={() => setShowPayInterest(false)} className="flex-1 px-4 py-2.5 border border-white/10 text-white rounded-lg hover:bg-white/5 font-semibold transition-all">Cancel</button>
-              <button onClick={submitPayment} className="flex-1 px-4 py-2.5 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-lg font-semibold transition-all">Pay</button>
-            </div>
-          </div>
-        </div>
+        <PayInterestModal
+          paymentForm={paymentForm}
+          setPaymentForm={setPaymentForm}
+          onSubmit={submitPayment}
+          onClose={() => setShowPayInterest(false)}
+        />
       )}
 
-      {/* Close Loan Modal */}
       {showCloseLoan && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-800 rounded-2xl border border-white/10 p-6 max-w-md w-full space-y-4">
-            <h3 className="text-2xl font-bold text-white">Close Loan</h3>
-            <p className="text-slate-300">Are you sure you want to close this loan? This action cannot be undone.</p>
-            <div className="flex gap-3 pt-4">
-              <button onClick={() => setShowCloseLoan(false)} className="flex-1 px-4 py-2.5 border border-white/10 text-white rounded-lg hover:bg-white/5 font-semibold transition-all">Cancel</button>
-              <button onClick={submitCloseLoan} className="flex-1 px-4 py-2.5 bg-gradient-to-r from-red-500 to-orange-500 text-white rounded-lg font-semibold transition-all">Close Loan</button>
-            </div>
-          </div>
-        </div>
+        <CloseLoanModal
+          onConfirm={submitCloseLoan}
+          onClose={() => setShowCloseLoan(false)}
+        />
       )}
 
-      {/* Renew Loan Modal */}
       {showRenew && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-800 rounded-2xl border border-white/10 p-6 max-w-md w-full space-y-5">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-indigo-500/20 rounded-xl"><RefreshCw className="text-indigo-400" size={22} /></div>
-              <div>
-                <h3 className="text-xl font-black text-white">Renew Loan</h3>
-                <p className="text-slate-400 text-xs mt-0.5">Resets loan date and clears pending interest</p>
-              </div>
-            </div>
-            <div className="bg-slate-900/50 rounded-xl p-4 space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-slate-400">Customer</span><span className="text-white font-bold">{loan.customerName}</span></div>
-              <div className="flex justify-between"><span className="text-slate-400">Current Loan Date</span><span className="text-white font-bold">{loan.loanDate ? new Date(loan.loanDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }) : '—'}</span></div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-semibold text-slate-300 mb-2">Loan Amount (₹)</label>
-                <input type="number" value={renewForm.loanAmount}
-                  onChange={(e) => setRenewForm(f => ({ ...f, loanAmount: e.target.value }))}
-                  className="w-full px-4 py-2.5 bg-slate-700/50 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-slate-300 mb-2">Interest Rate (%)</label>
-                <input type="number" step="0.01" value={renewForm.interestRate}
-                  onChange={(e) => setRenewForm(f => ({ ...f, interestRate: e.target.value }))}
-                  className="w-full px-4 py-2.5 bg-slate-700/50 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-              </div>
-            </div>
-            <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl px-4 py-3 flex justify-between items-center">
-              <span className="text-slate-400 text-sm">New Monthly Interest</span>
-              <span className="text-indigo-300 font-black text-lg">
-                ₹{((parseFloat(renewForm.loanAmount) || 0) * (parseFloat(renewForm.interestRate) || 0) / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
-              </span>
-            </div>
-            <div>
-              <label className="block text-sm font-semibold text-slate-300 mb-2">Renewal Date</label>
-              <input type="date" value={renewForm.renewalDate}
-                onChange={(e) => setRenewForm(f => ({ ...f, renewalDate: e.target.value }))}
-                className="w-full px-4 py-2.5 bg-slate-700/50 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-            </div>
-            <p className="text-amber-400/80 text-xs bg-amber-500/10 border border-amber-500/20 rounded-lg px-4 py-3">
-              ⚠ All unpaid interest records will be cleared and a fresh cycle begins from the renewal date.
-            </p>
-            <div className="flex gap-3 pt-2">
-              <button onClick={() => setShowRenew(false)} className="flex-1 px-4 py-2.5 border border-white/10 text-white rounded-lg hover:bg-white/5 font-semibold transition-all">Cancel</button>
-              <button onClick={submitRenew} className="flex-1 px-4 py-2.5 bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white rounded-lg font-semibold transition-all">Confirm Renewal</button>
-            </div>
-          </div>
-        </div>
+        <RenewLoanModal
+          loan={loan}
+          renewForm={renewForm}
+          setRenewForm={setRenewForm}
+          onConfirm={submitRenew}
+          onClose={() => setShowRenew(false)}
+        />
       )}
 
-      {/* Part Payment / Foreclosure Modal */}
       {showPartPayment && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-800 rounded-2xl border border-white/10 p-6 max-w-md w-full space-y-5">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-amber-500/20 rounded-xl"><Scissors className="text-amber-400" size={22} /></div>
-              <div>
-                <h3 className="text-xl font-black text-white">Part Payment / Foreclosure</h3>
-                <p className="text-slate-400 text-xs mt-0.5">Reduce principal or fully settle the loan</p>
-              </div>
-            </div>
-            <div className="bg-slate-900/50 rounded-xl p-4 space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-slate-400">Current Balance</span><span className="text-white font-black text-base">₹{(parseFloat(loan.loanAmount) || 0).toLocaleString()}</span></div>
-              <div className="flex justify-between"><span className="text-slate-400">Monthly Interest</span><span className="text-emerald-400 font-bold">₹{(parseFloat(loan.monthlyInterest) || 0).toLocaleString()}</span></div>
-              {partPayForm.amount && !partPayForm.isFull && (
-                <div className="flex justify-between border-t border-white/5 pt-2">
-                  <span className="text-slate-400">Remaining After Payment</span>
-                  <span className="text-amber-400 font-black">
-                    ₹{Math.max(0, (parseFloat(loan.loanAmount) || 0) - (parseFloat(partPayForm.amount) || 0)).toLocaleString()}
-                  </span>
-                </div>
-              )}
-            </div>
-            <div>
-              <label className="block text-sm font-semibold text-slate-300 mb-2">Payment Amount (₹)</label>
-              <input type="number" value={partPayForm.amount} placeholder="Enter amount"
-                onChange={(e) => setPartPayForm(p => ({ ...p, amount: e.target.value, isFull: false }))}
-                disabled={partPayForm.isFull}
-                className="w-full px-4 py-2.5 bg-slate-700/50 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50" />
-            </div>
-            <label className="flex items-center gap-3 cursor-pointer select-none">
-              <input type="checkbox" checked={partPayForm.isFull}
-                onChange={(e) => setPartPayForm(p => ({ ...p, isFull: e.target.checked, amount: e.target.checked ? (parseFloat(loan.loanAmount) || 0) : p.amount }))}
-                className="w-4 h-4 accent-amber-500 rounded" />
-              <span className="text-white font-semibold text-sm">Full Foreclosure — settle entire loan amount</span>
-            </label>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-semibold text-slate-300 mb-2">Payment Date</label>
-                <input type="date" value={partPayForm.paymentDate}
-                  onChange={(e) => setPartPayForm(p => ({ ...p, paymentDate: e.target.value }))}
-                  className="w-full px-4 py-2.5 bg-slate-700/50 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-amber-500" />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-slate-300 mb-2">Payment Mode</label>
-                <select value={partPayForm.paymentMode}
-                  onChange={(e) => setPartPayForm(p => ({ ...p, paymentMode: e.target.value }))}
-                  className="w-full px-4 py-2.5 bg-slate-700/50 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-amber-500">
-                  <option value="CASH">CASH</option>
-                  <option value="UPI">UPI</option>
-                  <option value="BANK">BANK</option>
-                </select>
-              </div>
-            </div>
-            <div className="flex gap-3 pt-2">
-              <button onClick={() => setShowPartPayment(false)} className="flex-1 px-4 py-2.5 border border-white/10 text-white rounded-lg hover:bg-white/5 font-semibold transition-all">Cancel</button>
-              <button onClick={submitPartPayment} className="flex-1 px-4 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white rounded-lg font-semibold transition-all">
-                {partPayForm.isFull ? 'Foreclose Loan' : 'Record Payment'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <PartPaymentModal
+          loan={loan}
+          partPayForm={partPayForm}
+          setPartPayForm={setPartPayForm}
+          onSubmit={submitPartPayment}
+          onClose={() => setShowPartPayment(false)}
+        />
       )}
     </div>
   );

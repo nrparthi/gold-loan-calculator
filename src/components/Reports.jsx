@@ -1,229 +1,211 @@
-import { useState } from 'react';
-import { Download, TrendingUp, BarChart3, PieChart, Calendar, Activity, CheckCircle2, Clock } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Download, TrendingUp, BarChart3, Calendar, Activity, CheckCircle2, Clock, Building2, Loader2 } from 'lucide-react';
+import api, { getErrorMessage } from '../api';
+import { useToastContext } from './Toast';
 
-const Reports = ({ loans = [] }) => {
-  const [dateRange, setDateRange] = useState({ 
-    from: new Date(new Date().setMonth(new Date().getMonth() - 1)).toISOString().split('T')[0], 
-    to: new Date().toISOString().split('T')[0] 
-  });
+const toCSV = (headers, rows, filename) => {
+  const csv = [headers, ...rows].map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+};
 
-  const filteredLoans = loans.filter(loan => {
-    if (!loan.loanDate) return true;
-    const date = new Date(loan.loanDate);
-    return date >= new Date(dateRange.from) && date <= new Date(dateRange.to);
-  });
+const fmt = (date) => date ? new Date(date).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }) : '';
 
-  const summary = {
-    totalLoans: filteredLoans.length,
-    totalLoanAmount: filteredLoans.reduce((sum, l) => sum + (parseFloat(l.amountGiven || l.loanAmount) || 0), 0),
-    totalInterestPaid: filteredLoans.reduce((sum, l) => sum + (parseFloat(l.totalInterestPaid) || 0), 0),
-    closedLoans: filteredLoans.filter(l => l.status === 'closed').length,
-    activeLoans: filteredLoans.filter(l => l.status === 'active' || !l.status).length,
-    totalBankAmount: filteredLoans.reduce((sum, l) => sum + (parseFloat(l.bankAmount) || 0), 0),
-    totalBankSettled: filteredLoans.reduce((sum, l) => sum + (parseFloat(l.bankSettledAmount) || 0), 0),
+const Reports = ({ isSuperAdmin = false, branches = [], currentBranch }) => {
+  const { showError, showSuccess } = useToastContext();
+  const today = new Date().toLocaleDateString('sv', { timeZone: 'Asia/Kolkata' });
+  const lastMonth = new Date(new Date().setMonth(new Date().getMonth() - 1)).toLocaleDateString('sv', { timeZone: 'Asia/Kolkata' });
+
+  const [dateRange, setDateRange] = useState({ from: lastMonth, to: today });
+  const [selectedBranch, setSelectedBranch] = useState('all');
+  const [exporting, setExporting] = useState(false);
+  const [stats, setStats] = useState(null);
+  const [loadingStats, setLoadingStats] = useState(true);
+
+  useEffect(() => {
+    if (!currentBranch) return;
+    setLoadingStats(true);
+    const branchParam = isSuperAdmin
+      ? (selectedBranch === 'all' ? { role: 'super_admin' } : { branchId: selectedBranch })
+      : { branchId: currentBranch.id };
+    api.get('/loans/stats', { params: { ...branchParam, from: dateRange.from, to: dateRange.to } })
+      .then(res => setStats(res.data))
+      .catch(err => showError(getErrorMessage(err)))
+      .finally(() => setLoadingStats(false));
+  }, [dateRange, selectedBranch, currentBranch, isSuperAdmin]);
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const branchParam = isSuperAdmin
+        ? (selectedBranch === 'all' ? { role: 'super_admin' } : { branchId: selectedBranch })
+        : { branchId: currentBranch?.id };
+      const dateParams = { from: dateRange.from, to: dateRange.to };
+      const [loansRes, interestRes, partRes] = await Promise.all([
+        api.get('/loans/export', { params: { ...branchParam, ...dateParams } }),
+        api.get('/reports/interest-payments', { params: { ...branchParam, ...dateParams } }),
+        api.get('/reports/part-payments', { params: { ...branchParam, ...dateParams } }),
+      ]);
+
+      const suffix = `${dateRange.from}_to_${dateRange.to}`;
+
+      toCSV(
+        ['Loan No.', 'Customer ID', 'Customer Name', 'Phone', 'Branch', 'Loan Date', 'Amount Given', 'Loan Amount', 'Interest Rate (%)', 'Monthly Interest', 'Total Interest Paid', 'Bank Received', 'Bank Settled', 'Status'],
+        loansRes.data.map(l => [
+          l.id?.split('-').pop() || '',
+          l.customerId || '',
+          l.customerName || '',
+          l.customerPhone || '',
+          l.branchName || '',
+          fmt(l.loanDate),
+          parseFloat(l.amountGiven || l.loanAmount) || 0,
+          parseFloat(l.loanAmount) || 0,
+          parseFloat(l.interestRate) || 0,
+          parseFloat(l.monthlyInterest) || 0,
+          parseFloat(l.totalInterestPaid) || 0,
+          parseFloat(l.bankAmount) || 0,
+          parseFloat(l.bankSettledAmount) || 0,
+          l.status || 'active',
+        ]),
+        `loans_${suffix}.csv`
+      );
+
+      toCSV(
+        ['Loan No.', 'Customer Name', 'Phone', 'Branch', 'Due Date', 'Amount', 'Paid Amount', 'Payment Date', 'Payment Mode', 'Carry Forward'],
+        interestRes.data.map(ip => [
+          ip.loan_id?.split('-').pop() || ip.loan_id || '',
+          ip.customer_name || '',
+          ip.customer_phone || '',
+          ip.branch_name || '',
+          fmt(ip.due_date),
+          parseFloat(ip.amount) || 0,
+          parseFloat(ip.paid_amount) || 0,
+          fmt(ip.payment_date),
+          ip.payment_mode || 'CASH',
+          parseFloat(ip.carry_forward) || 0,
+        ]),
+        `interest_payments_${suffix}.csv`
+      );
+
+      toCSV(
+        ['Loan No.', 'Customer Name', 'Phone', 'Branch', 'Payment Date', 'Amount Paid', 'Balance After', 'Payment Mode', 'Type'],
+        partRes.data.map(pp => [
+          pp.loan_id?.split('-').pop() || pp.loan_id || '',
+          pp.customer_name || '',
+          pp.customer_phone || '',
+          pp.branch_name || '',
+          fmt(pp.payment_date),
+          parseFloat(pp.amount) || 0,
+          parseFloat(pp.balance_after) || 0,
+          pp.payment_mode || 'CASH',
+          pp.is_foreclosure ? 'Foreclosure' : 'Part Payment',
+        ]),
+        `part_payments_${suffix}.csv`
+      );
+
+      showSuccess('3 CSV files downloaded');
+    } catch (err) {
+      showError(getErrorMessage(err));
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
     <div className="space-y-10 animate-in fade-in zoom-in duration-700">
-      {/* Header Section */}
+      {/* Header */}
       <div className="relative overflow-hidden rounded-[2.5rem] bg-gradient-to-br from-emerald-600 via-teal-600 to-cyan-700 p-10 lg:p-14 shadow-2xl border border-white/10">
         <div className="absolute inset-0 opacity-30">
           <div className="absolute top-0 right-0 w-96 h-96 bg-emerald-400 rounded-full blur-[100px] animate-pulse"></div>
         </div>
-        <div className="relative z-10">
-          <div className="flex items-center gap-6">
-            <div className="w-20 h-20 rounded-[2rem] bg-white/10 backdrop-blur-xl border border-white/20 flex items-center justify-center shadow-2xl">
-              <BarChart3 size={40} className="text-white" />
-            </div>
-            <div>
-              <h1 className="text-4xl lg:text-5xl font-black text-white tracking-tight">Reports & Analytics</h1>
-              <p className="text-emerald-100 text-lg font-medium mt-2 opacity-90">Deep dive into your branch performance and loan metrics</p>
-            </div>
+        <div className="relative z-10 flex items-center gap-6">
+          <div className="w-20 h-20 rounded-[2rem] bg-white/10 backdrop-blur-xl border border-white/20 flex items-center justify-center shadow-2xl">
+            <BarChart3 size={40} className="text-white" />
+          </div>
+          <div>
+            <h1 className="text-4xl lg:text-5xl font-black text-white tracking-tight">Reports & Analytics</h1>
+            <p className="text-emerald-100 text-lg font-medium mt-2 opacity-90">Deep dive into your branch performance and loan metrics</p>
           </div>
         </div>
       </div>
 
       {/* Control Panel */}
       <div className="bg-slate-800/40 backdrop-blur-2xl rounded-3xl border border-white/10 p-8 shadow-xl flex flex-col lg:flex-row items-end gap-6">
-        <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
-          <div className="space-y-2">
-            <label className="text-sm font-bold text-slate-400 ml-1">From Date</label>
-            <div className="relative">
-              <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-              <input 
-                type="date" 
-                value={dateRange.from} 
-                onChange={(e) => setDateRange({ ...dateRange, from: e.target.value })} 
-                className="w-full pl-12 pr-5 py-4 bg-slate-900/50 border border-white/10 rounded-2xl text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all font-bold" 
-              />
+        <div className="flex-1 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 w-full">
+          {isSuperAdmin && (
+            <div className="space-y-2">
+              <label className="text-sm font-bold text-slate-400 ml-1">Branch</label>
+              <div className="relative">
+                <Building2 className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+                <select
+                  value={selectedBranch}
+                  onChange={(e) => setSelectedBranch(e.target.value)}
+                  className="w-full pl-11 pr-4 py-4 bg-slate-900/50 border border-white/10 rounded-2xl text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all appearance-none cursor-pointer font-bold"
+                >
+                  <option value="all">All Branches</option>
+                  {branches.map(b => <option key={b.id} value={b.id}>{b.branch_name}</option>)}
+                </select>
+              </div>
             </div>
+          )}
+          <div className="space-y-2">
+            <label className="text-sm font-bold text-slate-400 ml-1 flex items-center gap-2"><Calendar size={14} /> From</label>
+            <input type="date" value={dateRange.from}
+              onChange={(e) => setDateRange(p => ({ ...p, from: e.target.value }))}
+              className="w-full px-5 py-4 bg-slate-900/50 border border-white/10 rounded-2xl text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all"
+            />
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-bold text-slate-400 ml-1">To Date</label>
-            <div className="relative">
-              <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-              <input 
-                type="date" 
-                value={dateRange.to} 
-                onChange={(e) => setDateRange({ ...dateRange, to: e.target.value })} 
-                className="w-full pl-12 pr-5 py-4 bg-slate-900/50 border border-white/10 rounded-2xl text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all font-bold" 
-              />
+            <label className="text-sm font-bold text-slate-400 ml-1 flex items-center gap-2"><Calendar size={14} /> To</label>
+            <input type="date" value={dateRange.to}
+              onChange={(e) => setDateRange(p => ({ ...p, to: e.target.value }))}
+              className="w-full px-5 py-4 bg-slate-900/50 border border-white/10 rounded-2xl text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all"
+            />
+          </div>
+        </div>
+        <button
+          onClick={handleExport}
+          disabled={exporting}
+          className="flex items-center gap-3 px-10 py-4 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 disabled:opacity-60 text-white rounded-2xl font-black tracking-wide transition-all shadow-xl shadow-emerald-500/20 active:scale-95 whitespace-nowrap"
+        >
+          {exporting ? <Loader2 size={20} className="animate-spin" /> : <Download size={20} />}
+          {exporting ? 'Exporting…' : 'Export CSVs'}
+        </button>
+      </div>
+
+      {/* Summary Stats */}
+      {loadingStats ? (
+        <div className="flex items-center justify-center py-16 gap-3 text-slate-500">
+          <Loader2 size={24} className="animate-spin" />
+          <span className="font-bold">Loading stats…</span>
+        </div>
+      ) : stats && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+          {[
+            { label: 'Total Loans', value: stats.totalLoans, icon: Activity, color: 'blue', fmt: v => v },
+            { label: 'Active', value: stats.activeCount, icon: CheckCircle2, color: 'emerald', fmt: v => v },
+            { label: 'Closed', value: stats.closedCount, icon: Clock, color: 'slate', fmt: v => v },
+            { label: 'Amount Given', value: stats.totalAmountGiven, icon: TrendingUp, color: 'orange', fmt: v => `₹${(v/100000).toFixed(1)}L` },
+            { label: 'Interest Earned', value: stats.totalInterestPaid, icon: TrendingUp, color: 'violet', fmt: v => `₹${v.toLocaleString()}` },
+            { label: 'Bank Received', value: stats.totalBankAmount, icon: TrendingUp, color: 'cyan', fmt: v => `₹${(v/100000).toFixed(1)}L` },
+            { label: 'Bank Settled', value: stats.totalBankSettled, icon: TrendingUp, color: 'teal', fmt: v => `₹${(v/100000).toFixed(1)}L` },
+            { label: 'Pending Interests', value: stats.pendingInterests, icon: Clock, color: 'red', fmt: v => v },
+          ].map(({ label, value, icon: Icon, color, fmt: f }) => (
+            <div key={label} className={`bg-${color}-500/5 border border-${color}-500/20 rounded-2xl p-6`}>
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-slate-400 text-xs font-black uppercase tracking-widest">{label}</p>
+                <Icon size={16} className={`text-${color}-400`} />
+              </div>
+              <p className={`text-2xl font-black text-${color}-400`}>{f(value)}</p>
             </div>
-          </div>
+          ))}
         </div>
-        <div className="flex gap-4 w-full lg:w-auto">
-          <button className="flex-1 lg:flex-none px-10 py-4 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white rounded-2xl font-black tracking-wide transition-all shadow-xl shadow-emerald-500/20 active:scale-95">
-            Update Report
-          </button>
-          <button className="p-4 bg-white/5 border border-white/10 text-slate-300 hover:text-white hover:bg-white/10 rounded-2xl transition-all shadow-xl">
-            <Download size={24} />
-          </button>
-        </div>
-      </div>
-
-      {/* High-Level Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-        <div className="bg-[#1e293b]/60 backdrop-blur-xl rounded-[2rem] border border-white/5 p-8 shadow-xl">
-          <div className="flex justify-between items-start">
-            <p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">Volume</p>
-            <Activity size={20} className="text-blue-400" />
-          </div>
-          <p className="text-4xl font-black text-white mt-4">{summary.totalLoans}</p>
-          <p className="text-blue-400 text-xs font-bold mt-2">Total Loans Processed</p>
-        </div>
-
-        <div className="bg-[#1e293b]/60 backdrop-blur-xl rounded-[2rem] border border-white/5 p-8 shadow-xl">
-          <div className="flex justify-between items-start">
-            <p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">Value</p>
-            <TrendingUp size={20} className="text-orange-400" />
-          </div>
-          <p className="text-3xl font-black text-white mt-4">₹{(summary.totalLoanAmount / 100000).toFixed(2)}L</p>
-          <p className="text-orange-400 text-xs font-bold mt-2">Portfolio Net Worth</p>
-        </div>
-
-        <div className="bg-[#1e293b]/60 backdrop-blur-xl rounded-[2rem] border border-white/5 p-8 shadow-xl">
-          <div className="flex justify-between items-start">
-            <p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">Revenue</p>
-            <PieChart size={20} className="text-emerald-400" />
-          </div>
-          <p className="text-3xl font-black text-white mt-4">₹{summary.totalInterestPaid.toLocaleString()}</p>
-          <p className="text-emerald-400 text-xs font-bold mt-2">Interest Interest Earned</p>
-        </div>
-
-        <div className="bg-[#1e293b]/60 backdrop-blur-xl rounded-[2rem] border border-white/5 p-8 shadow-xl">
-          <div className="flex justify-between items-start">
-            <p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">Growth</p>
-            <BarChart3 size={20} className="text-purple-400" />
-          </div>
-          <p className="text-4xl font-black text-white mt-4">{summary.totalLoanAmount > 0 ? ((summary.totalInterestPaid / summary.totalLoanAmount) * 100).toFixed(1) : 0}%</p>
-          <p className="text-purple-400 text-xs font-bold mt-2">Return on Portfolio</p>
-        </div>
-      </div>
-
-      {/* Secondary Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        <div className="bg-gradient-to-br from-emerald-500/10 to-teal-500/10 rounded-[2.5rem] border border-emerald-500/20 p-10 shadow-2xl flex items-center justify-between">
-          <div>
-            <p className="text-emerald-400 text-xs font-black uppercase tracking-[0.2em] mb-4">Active Status</p>
-            <p className="text-6xl font-black text-white">{summary.activeLoans}</p>
-            <p className="text-slate-400 font-bold mt-4">Ongoing active accounts</p>
-          </div>
-          <div className="p-8 bg-emerald-500/20 rounded-full">
-            <Clock size={48} className="text-emerald-400" />
-          </div>
-        </div>
-
-        <div className="bg-gradient-to-br from-slate-500/10 to-slate-400/10 rounded-[2.5rem] border border-slate-500/20 p-10 shadow-2xl flex items-center justify-between">
-          <div>
-            <p className="text-slate-400 text-xs font-black uppercase tracking-[0.2em] mb-4">Closed Status</p>
-            <p className="text-6xl font-black text-white">{summary.closedLoans}</p>
-            <p className="text-slate-400 font-bold mt-4">Successfully liquidated</p>
-          </div>
-          <div className="p-8 bg-slate-500/20 rounded-full">
-            <CheckCircle2 size={48} className="text-slate-400" />
-          </div>
-        </div>
-      </div>
-
-      {/* Bank Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-        <div className="bg-[#1e293b]/60 backdrop-blur-xl rounded-[2rem] border border-cyan-500/20 p-8 shadow-xl">
-          <div className="flex justify-between items-start">
-            <p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">Bank Received</p>
-            <TrendingUp size={20} className="text-cyan-400" />
-          </div>
-          <p className="text-3xl font-black text-white mt-4">₹{summary.totalBankAmount.toLocaleString()}</p>
-          <p className="text-cyan-400 text-xs font-bold mt-2">Total received from bank</p>
-        </div>
-        <div className="bg-[#1e293b]/60 backdrop-blur-xl rounded-[2rem] border border-teal-500/20 p-8 shadow-xl">
-          <div className="flex justify-between items-start">
-            <p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">Bank Settled</p>
-            <CheckCircle2 size={20} className="text-teal-400" />
-          </div>
-          <p className="text-3xl font-black text-white mt-4">₹{summary.totalBankSettled.toLocaleString()}</p>
-          <p className="text-teal-400 text-xs font-bold mt-2">Settled back to bank</p>
-        </div>
-        <div className="bg-[#1e293b]/60 backdrop-blur-xl rounded-[2rem] border border-amber-500/20 p-8 shadow-xl">
-          <div className="flex justify-between items-start">
-            <p className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">Outstanding to Bank</p>
-            <BarChart3 size={20} className="text-amber-400" />
-          </div>
-          <p className="text-3xl font-black text-white mt-4">₹{Math.max(0, summary.totalBankAmount - summary.totalBankSettled).toLocaleString()}</p>
-          <p className="text-amber-400 text-xs font-bold mt-2">Balance due to bank</p>
-        </div>
-      </div>
-
-      {/* Detailed Table */}
-      <div className="bg-slate-900/40 backdrop-blur-3xl rounded-[2.5rem] border border-white/10 overflow-hidden shadow-2xl">
-        <div className="p-10 border-b border-white/5 flex justify-between items-center">
-          <h2 className="text-3xl font-black text-white tracking-tight">Detailed Breakdown</h2>
-          <div className="px-6 py-2.5 bg-[#1e293b] text-emerald-400 rounded-2xl text-xs font-black border border-emerald-500/20">
-            {filteredLoans.length} ENTRIES
-          </div>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-slate-800/30 text-slate-500 border-b border-white/5">
-              <tr>
-                <th className="px-10 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Customer ID</th>
-                <th className="px-10 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Customer Name</th>
-                <th className="px-10 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Amount Given</th>
-                <th className="px-10 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Paid Int.</th>
-                <th className="px-10 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Bank Recv.</th>
-                <th className="px-10 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Bank Settled</th>
-                <th className="px-10 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Status</th>
-                <th className="px-10 py-6 text-left text-[10px] font-black uppercase tracking-[0.2em]">Loan No.</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/5">
-              {filteredLoans.map((loan) => (
-                <tr key={loan.id} className="hover:bg-white/[0.02] transition-all group">
-                  <td className="px-10 py-8 font-black text-blue-400">{loan.customerId || (loan.id?.includes('-') ? loan.id.split('-')[0] : loan.id)}</td>
-                  <td className="px-10 py-8">
-                    <div className="text-lg font-bold text-white">{loan.customerName}</div>
-                  </td>
-                  <td className="px-10 py-8 font-bold text-white/90">₹{(parseFloat(loan.amountGiven || loan.loanAmount) || 0).toLocaleString()}</td>
-                  <td className="px-10 py-8 font-bold text-emerald-400">₹{(parseFloat(loan.totalInterestPaid) || 0).toLocaleString()}</td>
-                  <td className="px-10 py-8 font-bold text-cyan-400">₹{(parseFloat(loan.bankAmount) || 0).toLocaleString()}</td>
-                  <td className="px-10 py-8 font-bold text-teal-400">₹{(parseFloat(loan.bankSettledAmount) || 0).toLocaleString()}</td>
-                  <td className="px-10 py-8">
-                    <span className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase border ${
-                      loan.status === 'closed'
-                        ? 'bg-slate-800/50 text-slate-400 border-slate-700'
-                        : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                    }`}>
-                      {loan.status || 'Active'}
-                    </span>
-                  </td>
-                  <td className="px-10 py-8 font-black text-slate-400">
-                    {loan.id.split('-').pop()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      )}
     </div>
   );
 };

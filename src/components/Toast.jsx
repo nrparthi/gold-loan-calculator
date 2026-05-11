@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useContext, createContext } from 'react';
 import { X, CheckCircle, AlertCircle, Info, AlertTriangle } from 'lucide-react';
 
 /**
@@ -127,4 +127,22 @@ const ToastContainer = ({ toasts, onRemove }) => {
   );
 };
 
-export { useToast, ToastContainer, Toast };
+const ToastContext = createContext(null);
+
+const ToastProvider = ({ children }) => {
+  const toast = useToast();
+  return (
+    <ToastContext.Provider value={toast}>
+      {children}
+      <ToastContainer toasts={toast.toasts} onRemove={toast.removeToast} />
+    </ToastContext.Provider>
+  );
+};
+
+const useToastContext = () => {
+  const ctx = useContext(ToastContext);
+  if (!ctx) throw new Error('useToastContext must be used within ToastProvider');
+  return ctx;
+};
+
+export { useToast, useToastContext, ToastProvider, ToastContainer, Toast };
