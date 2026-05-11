@@ -409,8 +409,8 @@ const LoanCreation = ({ onAddLoan, onPreviewBill, defaultInterestRate = 1.5, cur
               <input
                 type="text"
                 value={nextLoanNumber}
-                readOnly
-                className="w-full px-4 py-2.5 bg-slate-800/50 border border-white/5 rounded-lg text-slate-400 font-bold cursor-not-allowed"
+                onChange={(e) => setNextLoanNumber(e.target.value)}
+                className="w-full px-4 py-2.5 bg-slate-700/50 border border-white/10 rounded-lg text-white font-bold focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                 placeholder="Fetching..."
               />
             </div>
@@ -511,24 +511,23 @@ const LoanCreation = ({ onAddLoan, onPreviewBill, defaultInterestRate = 1.5, cur
           )}
 
           {/* Table Header (Hidden on small screens) */}
-          <div className="hidden lg:grid grid-cols-12 gap-4 ml-11 mb-2 px-4 text-sm font-semibold text-slate-400">
-            <div className="col-span-3">Ornament</div>
-            <div className="col-span-1 text-center">Qty</div>
-            <div className="col-span-1 text-center">Gross wt.</div>
-            <div className="col-span-1 text-center">Net wt.</div>
-            <div className="col-span-1 text-center">Rate</div>
-            <div className="col-span-1 text-center">Purity</div>
-            <div className="col-span-2 text-center">Value</div>
-            <div className="col-span-2 text-center">Action</div>
+          <div className="hidden lg:grid grid-cols-[2fr_0.7fr_1.1fr_1.1fr_1.3fr_0.9fr_1.2fr_1.8fr] gap-2 ml-11 mb-2 px-2 text-sm font-semibold text-slate-400">
+            <div>Ornament</div>
+            <div className="text-center">Qty</div>
+            <div className="text-center">Gross wt.</div>
+            <div className="text-center">Net wt.</div>
+            <div className="text-center">Rate</div>
+            <div className="text-center">Purity</div>
+            <div className="text-center">Value</div>
+            <div className="text-center">Action</div>
           </div>
 
           {/* Ornaments List */}
           <div className="space-y-4 lg:ml-11">
             {formData.ornaments.map((ornament, index) => (
-              <div key={index} className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-center bg-slate-700/30 p-4 rounded-xl border border-white/5 hover:border-white/10 transition-all">
-                
-                {/* Mobile Labels are handled via placeholders or small text for simplicity, matching the grid layout */}
-                <div className="col-span-1 lg:col-span-3">
+              <div key={index} className="grid grid-cols-1 lg:grid-cols-[2fr_0.7fr_1.1fr_1.1fr_1.3fr_0.9fr_1.2fr_1.8fr] gap-2 items-center bg-slate-700/30 p-4 rounded-xl border border-white/5 hover:border-white/10 transition-all">
+
+                <div>
                   <label className="block lg:hidden text-xs text-slate-400 mb-1">Ornament</label>
                   <select
                     value={ornament.type}
@@ -540,39 +539,39 @@ const LoanCreation = ({ onAddLoan, onPreviewBill, defaultInterestRate = 1.5, cur
                   </select>
                 </div>
 
-                <div className="col-span-1 lg:col-span-1">
+                <div>
                   <label className="block lg:hidden text-xs text-slate-400 mb-1">Quantity</label>
-                  <input type="number" min="1" value={ornament.quantity} onChange={(e) => handleOrnamentChange(index, 'quantity', e.target.value)} className="w-full px-3 py-2.5 bg-slate-800/80 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 text-center" />
+                  <input type="number" min="1" value={ornament.quantity} onChange={(e) => handleOrnamentChange(index, 'quantity', e.target.value)} className="w-full px-2 py-2.5 bg-slate-800/80 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 text-center" />
                 </div>
 
-                <div className="col-span-1 lg:col-span-1">
+                <div>
                   <label className="block lg:hidden text-xs text-slate-400 mb-1">Gross wt.</label>
-                  <input type="number" step="0.1" value={ornament.grossWt} onChange={(e) => handleOrnamentChange(index, 'grossWt', e.target.value)} className="w-full px-3 py-2.5 bg-slate-800/80 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 text-center" />
+                  <input type="number" step="0.1" value={ornament.grossWt} onChange={(e) => handleOrnamentChange(index, 'grossWt', e.target.value)} className="w-full px-2 py-2.5 bg-slate-800/80 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 text-center" />
                 </div>
 
-                <div className="col-span-1 lg:col-span-1">
+                <div>
                   <label className="block lg:hidden text-xs text-slate-400 mb-1">Net wt.</label>
-                  <input type="number" step="0.1" value={ornament.netWt} onChange={(e) => handleOrnamentChange(index, 'netWt', e.target.value)} className="w-full px-3 py-2.5 bg-slate-800/80 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 text-center" />
+                  <input type="number" step="0.1" value={ornament.netWt} onChange={(e) => handleOrnamentChange(index, 'netWt', e.target.value)} className="w-full px-2 py-2.5 bg-slate-800/80 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 text-center" />
                 </div>
 
-                <div className="col-span-1 lg:col-span-1">
+                <div>
                   <label className="block lg:hidden text-xs text-slate-400 mb-1">Rate/gram</label>
-                  <input type="number" value={ornament.ratePerGram} onChange={(e) => handleOrnamentChange(index, 'ratePerGram', e.target.value)} className="w-full px-2 py-2.5 bg-slate-800/80 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 text-center text-sm" />
+                  <input type="number" value={ornament.ratePerGram} onChange={(e) => handleOrnamentChange(index, 'ratePerGram', e.target.value)} className="w-full px-2 py-2.5 bg-slate-800/80 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 text-center" />
                 </div>
 
-                <div className="col-span-1 lg:col-span-1">
+                <div>
                   <label className="block lg:hidden text-xs text-slate-400 mb-1">Purity</label>
                   <input type="number" placeholder="916" value={ornament.purity ?? 916} onChange={(e) => handleOrnamentChange(index, 'purity', e.target.value)} title="Purity (e.g. 916=22k, 750=18k, 585=14k)" className="w-full px-2 py-2.5 bg-slate-800/80 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500 text-center text-sm" />
                 </div>
 
-                <div className="col-span-1 lg:col-span-2">
+                <div>
                   <label className="block lg:hidden text-xs text-slate-400 mb-1">Value</label>
-                  <div className="w-full px-2 py-2.5 bg-purple-600/20 border border-purple-500/30 rounded-lg text-purple-200 font-bold flex items-center justify-center shadow-inner text-sm">
+                  <div className="w-full px-2 py-2.5 bg-purple-600/20 border border-purple-500/30 rounded-lg text-purple-200 font-bold flex items-center justify-center shadow-inner">
                     ₹ {ornament.value.toLocaleString()}
                   </div>
                 </div>
 
-                <div className="col-span-1 lg:col-span-2 flex items-center justify-center gap-3">
+                <div className="flex items-center justify-center gap-3">
                   <div className="flex items-center gap-2">
                     <div className="relative group">
                       <div className="w-10 h-10 rounded-lg bg-slate-800 border border-white/10 flex items-center justify-center text-slate-500 overflow-hidden">
